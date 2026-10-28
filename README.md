@@ -26,6 +26,16 @@ npm run dev
 
 Open http://localhost:3000. Testen op je telefoon in hetzelfde wifi-netwerk: `npm run dev -- -H 0.0.0.0` en ga naar `http://<ip-van-je-pc>:3000`.
 
+## Updates
+
+De app staat op Vercel (https://gymapp-eight-kappa.vercel.app) en is gekoppeld aan GitHub (`giovannivanoort-spec/gymapp`). Elke push naar `main` gaat vanzelf live:
+
+```bash
+git add -A
+git commit -m "Wat er veranderd is"
+git push
+```
+
 ## 3. Online zetten (zodat je vrienden erbij kunnen)
 
 1. Zet deze map op GitHub.
