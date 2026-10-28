@@ -1,0 +1,226 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0b0d10;
+  --color-surface: #15181d;
+  --color-surface-2: #1d2128;
+  --color-line: #2a2f37;
+  --color-ink: #eceef1;
+  --color-muted: #9aa1ab;
+  --color-accent: #c8f53a;
+  --color-accent-ink: #12160a;
+  --color-danger: #ff6b6b;
+  --color-warn: #ffc857;
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+html {
+  color-scheme: dark;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  background:
+    radial-gradient(1200px 500px at 50% -200px, rgba(200, 245, 58, 0.07), transparent 70%),
+    var(--color-bg);
+  background-attachment: fixed;
+  color: var(--color-ink);
+}
+
+/* ───────── Animaties ───────── */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: none;
+  }
+}
+@keyframes pop {
+  0% {
+    transform: scale(1);
+  }
+  45% {
+    transform: scale(1.2);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+@keyframes badge-reveal {
+  0% {
+    opacity: 0;
+    transform: scale(0.2) rotate(-30deg);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.12) rotate(5deg);
+  }
+  100% {
+    transform: none;
+  }
+}
+@keyframes ring-pulse {
+  0% {
+    opacity: 0.6;
+    transform: scale(0.8);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.8);
+  }
+}
+
+@utility animate-fade-up {
+  animation: fade-up 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation-delay: calc(var(--i, 0) * 45ms);
+}
+@utility animate-fade-in {
+  animation: fade-in 0.3s ease-out both;
+}
+@utility animate-scale-in {
+  animation: scale-in 0.35s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@utility animate-sheet-up {
+  animation: sheet-up 0.38s cubic-bezier(0.2, 0.9, 0.25, 1) both;
+}
+@utility animate-pop {
+  animation: pop 0.35s ease-out;
+}
+@utility animate-badge-reveal {
+  animation: badge-reveal 0.9s cubic-bezier(0.2, 0.9, 0.25, 1.2) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@utility card {
+  @apply rounded-2xl border border-line bg-surface p-4 transition-colors duration-200;
+}
+@utility skeleton {
+  @apply relative overflow-hidden rounded-xl bg-surface-2 after:absolute after:inset-0 after:-translate-x-full after:bg-gradient-to-r after:from-transparent after:via-white/5 after:to-transparent after:animate-[shimmer_1.4s_infinite];
+}
+@utility btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none;
+}
+@utility btn-primary {
+  @apply btn bg-accent text-accent-ink hover:brightness-110;
+}
+@utility btn-ghost {
+  @apply btn border border-line bg-surface-2 text-ink hover:border-muted;
+}
+@utility btn-danger {
+  @apply btn border border-danger/40 text-danger hover:bg-danger/10;
+}
+@utility input {
+  @apply w-full rounded-xl border border-line bg-surface-2 px-3 py-2.5 text-base text-ink placeholder:text-muted/70 outline-none focus:border-accent;
+}
+@utility label {
+  @apply mb-1 block text-xs font-medium uppercase tracking-wide text-muted;
+}
+@utility chip {
+  @apply inline-flex items-center rounded-full border border-line px-2.5 py-1 text-xs text-muted;
+}
+
+/* Verberg de pijltjes in number inputs: op mobiel typ je toch. */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+/* Opmaak van coach-antwoorden (Markdown). */
+.coach-md > * + * {
+  margin-top: 0.6rem;
+}
+.coach-md h1,
+.coach-md h2,
+.coach-md h3 {
+  font-weight: 700;
+  font-size: 1rem;
+  margin-top: 1rem;
+}
+.coach-md ul {
+  list-style: disc;
+  padding-left: 1.25rem;
+}
+.coach-md ol {
+  list-style: decimal;
+  padding-left: 1.25rem;
+}
+.coach-md li + li {
+  margin-top: 0.2rem;
+}
+.coach-md strong {
+  color: var(--color-ink);
+  font-weight: 650;
+}
+.coach-md a {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+.coach-md code {
+  font-size: 0.85em;
+  background: var(--color-surface-2);
+  padding: 0.1rem 0.3rem;
+  border-radius: 0.3rem;
+}
+.coach-md table {
+  display: block;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+.coach-md th,
+.coach-md td {
+  border: 1px solid var(--color-line);
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+  white-space: nowrap;
+}
+.coach-md th {
+  background: var(--color-surface-2);
+}
