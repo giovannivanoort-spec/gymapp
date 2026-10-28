@@ -74,6 +74,17 @@ Tab *Progressie*: een maandkalender (getrainde dagen gevuld, geplande dagen met 
 - **Schijvencalculator** bij barbell- en EZ-bar-oefeningen.
 - **Offline**: sets die je zonder internet invult, worden bewaard en verstuurd zodra er weer verbinding is. Een service worker (`public/sw.js`, alleen in productie) bewaart de app en de laatst geladen data.
 
+## Voeding
+
+Tab *Voeding*: dagboek per maaltijd met een calorie-ring en macro-balken, en een weekoverzicht.
+
+- **Dagdoel**: Mifflin-St Jeor (gewicht, lengte, leeftijd, geslacht) × activiteit, ±450/300 kcal voor afvallen/aankomen; eiwit 1,8 g/kg (2,2 bij afvallen), vet 25%, rest koolhydraten. Handmatig te overschrijven in Profiel → Voeding.
+- **Zoeken**: 698 basisproducten (USDA FoodData Central SR Legacy, publiek domein, vertaald naar het Nederlands, `src/lib/nutrition/foods-basis.json`) en merkproducten via Open Food Facts (ODbL), via de proxy `/api/off`.
+- **Barcodescanner** (camera; native BarcodeDetector of ZXing), **eigen producten**, **favorieten**, **recent**, **opgeslagen maaltijden** en **kopieer van gisteren**.
+- **Foto-schatting** met Claude Opus 5.5 (`/api/nutrition/photo`, ±2–3 cent per foto, max. `PHOTO_DAILY_LIMIT` per persoon per dag, standaard 15). De schatting is aan te passen voordat je hem toevoegt.
+- De AI-coach kan je voeding bekijken (`get_nutrition`).
+- Instellen: draai [`supabase/nutrition.sql`](supabase/nutrition.sql).
+
 ## Groep en meldingen
 
 - **Activiteit**-feed per groep: records, promoties en nieuwe leden, met een "Respect"-knop.

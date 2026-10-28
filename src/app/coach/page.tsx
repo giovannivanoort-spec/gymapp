@@ -28,6 +28,7 @@ const TOOL_LABELS: Record<string, string> = {
   save_template: "Schema opslaan",
   plan_group_workout: "Training klaarzetten",
   get_strength_ranks: "Ranks bekijken",
+  get_nutrition: "Voeding bekijken",
 };
 
 const STARTERS = [
@@ -36,6 +37,7 @@ const STARTERS = [
   "Hoe gaat mijn progressie op de bench press?",
   "Welke spieren heb ik de afgelopen 2 weken te weinig getraind?",
   "Hoe kom ik het snelst naar een hogere rang op de bench press?",
+  "Haal ik genoeg eiwit binnen voor mijn doel?",
 ];
 
 export default function CoachPage() {

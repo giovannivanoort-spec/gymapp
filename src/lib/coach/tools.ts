@@ -7,6 +7,7 @@ import { EQUIPMENT_LABEL } from "@/lib/exercise-types";
 import { EXERCISES, EXERCISE_BY_SLUG } from "@/lib/exercises";
 import { GROUP_BY_ID, MUSCLE_BY_ID, MUSCLE_GROUPS, MUSCLES, type MuscleGroupId, type MuscleId } from "@/lib/muscles";
 import { aggregateRanks, rankExercise } from "@/lib/ranks";
+import { computeTargets } from "@/lib/nutrition/targets";
 import { ageFrom } from "@/lib/dates";
 
 /**
@@ -392,6 +393,58 @@ export const TOOLS = [
           best: r.unit === "reps" ? `${r.value} reps` : r.viaAdded ? `+${r.value} kg extra (1RM)` : `1RM ≈ ${r.value} kg`,
           next_tier_at: r.nextAt == null ? null : r.unit === "reps" ? `${r.nextAt} reps` : `${Math.ceil(r.nextAt)} kg${r.viaAdded ? " extra" : " 1RM"}`,
         })),
+      };
+    },
+  }),
+
+  tool({
+    name: "get_nutrition",
+    label: "Voeding bekijken",
+    description:
+      "Voedingsdagboek van de gebruiker: per dag calorieën, eiwit, koolhydraten en vet (en per maaltijd wat er gegeten is), " +
+      "plus de dagdoelen (berekend uit gewicht, lengte, leeftijd, geslacht, activiteit en doel, of handmatig ingesteld).",
+    schema: z.object({
+      days: z.number().int().min(1).max(60).optional().describe("Aantal dagen terug, standaard 7"),
+      details: z.boolean().optional().describe("Ook de losse producten per maaltijd tonen (standaard alleen voor de laatste 2 dagen)"),
+    }),
+    run: async ({ days = 7, details }, { sb, userId }) => {
+      const since = new Date(Date.now() - (days - 1) * 86400000).toLocaleDateString("sv-SE", { timeZone: "Europe/Amsterdam" });
+      const [{ data: profile }, { data: logs, error }] = await Promise.all([
+        sb.from("profiles").select("*").eq("id", userId).single(),
+        sb.from("food_logs").select("date, meal, name, grams, kcal, protein, carbs, fat").gte("date", since).order("date").limit(2000),
+      ]);
+      if (error) return { error: error.message };
+      const targets = computeTargets(profile);
+      type L = { date: string; meal: string; name: string; grams: number; kcal: number; protein: number; carbs: number; fat: number };
+      const byDay = new Map<string, L[]>();
+      for (const l of (logs ?? []) as L[]) byDay.set(l.date, [...(byDay.get(l.date) ?? []), l]);
+      const dates = [...byDay.keys()].sort();
+      const r = (n: number) => Math.round(Number(n));
+      return {
+        goal: profile?.nutrition_goal ?? "maintain",
+        activity_level: profile?.activity_level ?? "moderate",
+        targets: targets && { kcal: targets.kcal, protein_g: targets.protein, carbs_g: targets.carbs, fat_g: targets.fat, bmr: targets.bmr, tdee: targets.tdee },
+        days_logged: dates.length,
+        days: dates.map((d, i) => {
+          const items = byDay.get(d)!;
+          const sum = (k: "kcal" | "protein" | "carbs" | "fat") => r(items.reduce((a, x) => a + Number(x[k]), 0));
+          const showItems = details || i >= dates.length - 2;
+          return {
+            date: d,
+            kcal: sum("kcal"),
+            protein_g: sum("protein"),
+            carbs_g: sum("carbs"),
+            fat_g: sum("fat"),
+            ...(showItems && {
+              meals: Object.fromEntries(
+                ["breakfast", "lunch", "dinner", "snack"].map((m) => [
+                  m,
+                  items.filter((x) => x.meal === m).map((x) => `${x.name} ${r(x.grams)} g (${r(x.kcal)} kcal, ${r(x.protein)} g eiwit)`),
+                ]),
+              ),
+            }),
+          };
+        }),
       };
     },
   }),

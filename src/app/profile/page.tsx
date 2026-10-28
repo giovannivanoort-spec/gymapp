@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { useAuth } from "@/components/AuthProvider";
 import { ChevronRightIcon } from "@/components/Icons";
+import { NutritionSettings } from "@/components/nutrition/NutritionSettings";
 import { PushToggle } from "@/components/PushToggle";
 import { RankBadge } from "@/components/RankBadge";
 import { TIERS } from "@/lib/ranks";
@@ -199,6 +200,8 @@ export default function ProfilePage() {
             {saved ? "Opgeslagen" : "Opslaan"}
           </button>
         </form>
+
+        <NutritionSettings />
 
         <PushToggle />
 

@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 
 const NAV = [
   { href: "/", label: "Home", icon: HomeIcon },
-  { href: "/exercises", label: "Oefeningen", icon: BookIcon },
+  { href: "/nutrition", label: "Voeding", icon: FoodIcon },
   { href: "/coach", label: "Coach", icon: CoachIcon },
   { href: "/progress", label: "Progressie", icon: ChartIcon },
   { href: "/profile", label: "Profiel", icon: UserIcon },
@@ -93,10 +93,10 @@ function HomeIcon() {
     </svg>
   );
 }
-function BookIcon() {
+function FoodIcon() {
   return (
     <svg {...iconProps}>
-      <path d="M6.5 6.5h11M6.5 17.5h11M3 9v6M21 9v6M6.5 5v14M17.5 5v14" />
+      <path d="M7 3v8a2 2 0 01-2 2v8M3 3v6a2 2 0 002 2M7 3v6M17 21v-8c-2 0-3-2-3-5s1-5 3-5v18" />
     </svg>
   );
 }

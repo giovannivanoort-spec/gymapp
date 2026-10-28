@@ -103,8 +103,9 @@ export default function HomePage() {
           </div>
         </section>
 
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           {[
+            { href: "/exercises", label: "Oefeningen" },
             { href: "/progress", label: "Kalender" },
             { href: "/templates", label: "Schema's" },
             { href: "/ranks", label: "Ranks" },
