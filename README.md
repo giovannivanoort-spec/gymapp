@@ -58,6 +58,18 @@ Op je telefoon: open de site → *Zet op beginscherm*. Dan werkt hij als app.
 
 Tab *Progressie*: een maandkalender (getrainde dagen gevuld, geplande dagen met een rand; tik op een dag voor je sets, reps, geschatte 1RM en records van die dag), per oefening een grafiek en tabel van je beste geschatte 1RM (of reps) per training, en een recordtabel van alle oefeningen.
 
+## In de gym
+
+- **Advies voor vandaag** per oefening (double progression): alle sets aan de bovenkant van het rep-bereik → gewicht omhoog (2,5 kg, of 2 kg bij dumbbells); anders zelfde gewicht en een rep erbij. De sets worden er alvast mee voorgevuld.
+- **Schijvencalculator** bij barbell- en EZ-bar-oefeningen.
+- **Offline**: sets die je zonder internet invult, worden bewaard en verstuurd zodra er weer verbinding is. Een service worker (`public/sw.js`, alleen in productie) bewaart de app en de laatst geladen data.
+
+## Groep en meldingen
+
+- **Activiteit**-feed per groep: records, promoties en nieuwe leden, met een "Respect"-knop.
+- **Pushmeldingen** (Profiel → Meldingen): records en promoties van groepsleden, en elke ochtend een herinnering als er een training gepland staat (Vercel Cron, `vercel.json`). Op iPhone alleen als de app op het beginscherm staat.
+- Instellen: draai [`supabase/features.sql`](supabase/features.sql). In `.env.local` en op Vercel: `NEXT_PUBLIC_VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`, `CRON_SECRET` en `SUPABASE_SECRET_KEY` (alleen server).
+
 ## Ranks
 
 Per oefening een rang: **Brons, Zilver, Goud, Platina, Diamant, Elite, Olympiër**. Berekend uit je beste set (geschatte 1RM via Epley, sets tot 12 reps) en vergeleken met krachtstandaarden van [StrengthLevel.com](https://strengthlevel.com) **per oefening, geslacht en lichaamsgewicht** (Beginner → Zilver, Novice → Goud, Intermediate → Platina, Advanced → Diamant, Elite → Elite, één Elite-stap verder → Olympiër). Bij lichaamsgewicht-oefeningen tellen reps, en extra gewicht (dipriem/vest) als dat er is. Dumbbell-gewichten gelden per dumbbell.
