@@ -43,7 +43,7 @@ export function AppShell({ title, back, action, children }: Props) {
         </header>
       )}
 
-      <main key={pathname} className="animate-fade-up flex-1 px-4 pb-28 pt-4">
+      <main key={pathname} className="animate-fade-up flex-1 px-4 pt-4 pb-[calc(env(safe-area-inset-bottom)+7rem)]">
         {children}
       </main>
 

@@ -104,24 +104,26 @@ body {
   }
 }
 
+/* fill-mode "backwards": na afloop blijft er geen transform hangen (die zou position: fixed
+   van pop-ups binnen de pagina aan de pagina vastzetten in plaats van aan het scherm). */
 @utility animate-fade-up {
-  animation: fade-up 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation: fade-up 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
   animation-delay: calc(var(--i, 0) * 45ms);
 }
 @utility animate-fade-in {
-  animation: fade-in 0.3s ease-out both;
+  animation: fade-in 0.3s ease-out backwards;
 }
 @utility animate-scale-in {
-  animation: scale-in 0.35s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation: scale-in 0.35s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
 }
 @utility animate-sheet-up {
-  animation: sheet-up 0.38s cubic-bezier(0.2, 0.9, 0.25, 1) both;
+  animation: sheet-up 0.38s cubic-bezier(0.2, 0.9, 0.25, 1) backwards;
 }
 @utility animate-pop {
   animation: pop 0.35s ease-out;
 }
 @utility animate-badge-reveal {
-  animation: badge-reveal 0.9s cubic-bezier(0.2, 0.9, 0.25, 1.2) both;
+  animation: badge-reveal 0.9s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards;
 }
 
 @media (prefers-reduced-motion: reduce) {

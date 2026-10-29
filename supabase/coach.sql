@@ -1,4 +1,4 @@
-  verc-- AI-coach: gesprekken en berichten.
+-- AI-coach: gesprekken en berichten.
 -- Plak dit in Supabase → SQL Editor → New query → Run (na schema.sql). Veilig om opnieuw te draaien.
 
 create table if not exists public.coach_conversations (

@@ -257,7 +257,7 @@ function Coach() {
             e.preventDefault();
             send(input);
           }}
-          className="sticky bottom-20 flex items-end gap-2 rounded-2xl border border-line bg-bg/95 p-2 backdrop-blur"
+          className="sticky bottom-[calc(env(safe-area-inset-bottom)+4.75rem)] flex items-end gap-2 rounded-2xl border border-line bg-bg/95 p-2 backdrop-blur"
         >
           <textarea
             className="input max-h-40 min-h-11 flex-1 resize-none py-2.5"

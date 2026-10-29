@@ -204,7 +204,7 @@ export function WorkoutBuilder({
         </Link>
       )}
 
-      <div className="sticky bottom-20 z-10 flex gap-2 rounded-2xl border border-line bg-bg/95 p-2 backdrop-blur">
+      <div className="sticky bottom-[calc(env(safe-area-inset-bottom)+4.75rem)] z-10 flex gap-2 rounded-2xl border border-line bg-bg/95 p-2 backdrop-blur">
         {onDelete && (
           <button className="btn-danger" onClick={onDelete} disabled={saving}>
             Verwijderen
@@ -225,7 +225,7 @@ export function WorkoutBuilder({
       </div>
 
       {flash && (
-        <div className="fixed inset-x-0 top-4 z-[60] mx-auto w-fit rounded-full bg-accent px-4 py-2 text-sm font-semibold text-accent-ink shadow-lg">
+        <div className="fixed inset-x-0 top-[max(1rem,env(safe-area-inset-top))] z-[60] mx-auto w-fit rounded-full bg-accent px-4 py-2 text-sm font-semibold text-accent-ink shadow-lg">
           {flash}
         </div>
       )}
