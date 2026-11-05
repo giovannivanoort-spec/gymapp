@@ -8,6 +8,7 @@ import { useAuth, useUserId } from "@/components/AuthProvider";
 import { Avatar, ProfileButton } from "@/components/Avatar";
 import { BookIcon, ChevronRightIcon, SparkleIcon } from "@/components/Icons";
 import { Portal } from "@/components/Portal";
+import { ActivityCard } from "@/components/home/ActivityCard";
 import { GroupChoiceSheet, JoinSheet, NewGroupSheet } from "@/components/home/GroupSheets";
 import { HomeFriends } from "@/components/home/HomeFriends";
 import { HomeGroups } from "@/components/home/HomeGroups";
@@ -24,6 +25,7 @@ import { WeekRecap } from "@/components/home/WeekRecap";
 import { WeekRecords } from "@/components/home/WeekRecords";
 import { fetchUpcoming } from "@/components/home/data";
 import { GREETINGS, refreshLive, strict, useClock, useRefreshOnResume, useSyncStatus } from "@/components/home/live";
+import { invalidateActivity } from "@/lib/activity";
 import { fetchCached, getCachedAt, useCachedState, type CachedState } from "@/lib/cache";
 import { ageFrom, toISODate } from "@/lib/dates";
 import { fetchFriends } from "@/lib/friends";
@@ -83,6 +85,8 @@ export default function HomePage() {
   /** Alles verversen en wachten tot de gegevens van deze pagina binnen zijn (trek-om-te-verversen, "Opnieuw"). */
   const refreshAll = () => {
     refreshLive();
+    // Stappen (eigen kaart, eigen sleutels): op de achtergrond mee verversen.
+    if (uid) invalidateActivity(uid);
     return Promise.allSettled(sources.map(({ key, fetcher }) => (key ? fetchCached<unknown>(key, fetcher, true) : null)));
   };
 
@@ -267,7 +271,9 @@ export default function HomePage() {
 
         <HomeFriends userId={userId} friends={friends} failed={failedToLoad(friendsS)} today={today} />
 
-        <NutritionCard week={foodS.data} failed={failedToLoad(foodS)} today={today} profile={profile as NutritionProfile | null} />
+        <NutritionCard week={foodS.data} failed={failedToLoad(foodS)} today={today} profile={profile as NutritionProfile | null} userId={userId} />
+
+        <ActivityCard userId={userId} today={today} />
 
         <HomeGroups
           groups={groups}

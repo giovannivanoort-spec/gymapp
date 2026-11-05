@@ -16,6 +16,9 @@ const OVER = 1.05;
  * - `mode="planned"`: een dag in de toekomst; er is nog niets gegeten, dus de tekst spreekt van "gepland".
  * - `plannedKcal`: gepland maar nog niet bevestigd eten op een dag die al bezig is. Verschijnt als
  *   lichtere "schaduw" op de ring, zodat je ziet of de rest van je planning nog binnen je doel past.
+ * - `activity`: beweging van deze dag (stappenteller/horloge of handmatig). `credit` > 0 betekent dat
+ *   `targets` al verhoogd is met die kcal (applyCredit); dat wordt hier zichtbaar gemaakt. Met alleen
+ *   `activeKcal` (terugverdienen staat uit) verschijnt een informatieve regel en verandert het doel niet.
  */
 export function MacroSummary({
   totals,
@@ -23,13 +26,16 @@ export function MacroSummary({
   fiber,
   mode = "eaten",
   plannedKcal = 0,
+  activity,
 }: {
   totals: Macros;
   targets: Targets | null;
   fiber?: number | null;
   mode?: "eaten" | "planned";
   plannedKcal?: number;
+  activity?: { credit: number; activeKcal: number | null } | null;
 }) {
+  const credit = targets && activity && activity.credit > 0 ? activity.credit : 0;
   const verb = mode === "planned" ? "gepland" : "gegeten";
   const kcalLeft = targets ? targets.kcal - totals.kcal : null;
   const pct = targets ? Math.min(1, totals.kcal / targets.kcal) : 0;
@@ -42,7 +48,7 @@ export function MacroSummary({
   const ringLabel = targets
     ? `${fmt(totals.kcal)} van ${fmt(targets.kcal)} kcal ${verb}, ${kcalLeft! >= 0 ? `${fmt(kcalLeft!)} ${leftWord}` : `${fmt(-kcalLeft!)} te veel`}${
         plannedKcal > 0 ? `, nog ${fmt(plannedKcal)} kcal gepland` : ""
-      }`
+      }${credit > 0 ? `, inclusief ${fmt(credit)} kcal door beweging` : ""}`
     : `${fmt(totals.kcal)} kcal ${verb}`;
   const fiberTarget = targets ? Math.round((targets.kcal / 1000) * 14) : null;
 
@@ -97,6 +103,13 @@ export function MacroSummary({
           <span className="font-semibold text-ink tabular-nums">{fmt(totals.kcal)}</span>
           {targets && <span className="tabular-nums"> / {fmt(targets.kcal)}</span>} kcal {verb}
         </p>
+        {credit > 0 ? (
+          <p className="-mt-1.5 text-[11px] text-muted tabular-nums">
+            Doel {fmt(targets!.kcal - credit)} <span className="font-semibold text-accent">+ {fmt(credit)} kcal door beweging</span>
+          </p>
+        ) : activity?.activeKcal != null && activity.activeKcal > 0 ? (
+          <p className="-mt-1.5 text-[11px] text-muted tabular-nums">Verbrand door beweging: ~{fmt(activity.activeKcal)} kcal (schatting)</p>
+        ) : null}
         <MacroBar label="Eiwit" value={totals.protein} target={targets?.protein} color={MACRO_COLORS.protein} />
         <MacroBar label="Koolhydraten" value={totals.carbs} target={targets?.carbs} color={MACRO_COLORS.carbs} />
         <MacroBar label="Vet" value={totals.fat} target={targets?.fat} color={MACRO_COLORS.fat} />

@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import { useAuth } from "@/components/AuthProvider";
+import { BurnCreditSetting } from "@/components/nutrition/BurnCreditSetting";
 import { invalidateNutrition } from "@/lib/nutrition/log";
 import { fmt, parseAmount } from "@/lib/nutrition/format";
 import {
@@ -220,6 +221,9 @@ function SettingsForm({ profile: p }: { profile: NutritionProfile }) {
       <button type="button" className="btn-primary w-full" onClick={save} disabled={busy || invalid}>
         {busy ? "Opslaan…" : saved ? "Opgeslagen" : "Voedingsdoelen opslaan"}
       </button>
+
+      {/* Slaat direct op; staat daarom onder de knop. */}
+      <BurnCreditSetting targets={preview} />
     </section>
   );
 }

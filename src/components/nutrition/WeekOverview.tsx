@@ -28,6 +28,7 @@ export function WeekOverview({
   error = false,
   onRetry,
   state,
+  credits,
 }: {
   /** Bevestigde logs in de periode, of undefined tijdens het laden. */
   logs: FoodLog[] | undefined;
@@ -40,6 +41,11 @@ export function WeekOverview({
   onRetry?: () => void;
   /** Laadstatus van de week: toont "Offline, bijgewerkt om …" als de getoonde week mogelijk oud is. */
   state?: Pick<CachedState<unknown>, "data" | "error" | "refreshing" | "updatedAt" | "stale" | "offline" | "retry">;
+  /**
+   * "Calorieën terugverdienen": extra kcal per dag (YYYY-MM-DD → kcal) bovenop `targets.kcal`. Een dag
+   * telt pas als "boven doel" boven zijn eigen doel (basis + beweging), net als in de dagsamenvatting.
+   */
+  credits?: Record<string, number>;
 }) {
   const today = toISODate();
   const days = useMemo(
@@ -105,7 +111,8 @@ export function WeekOverview({
             )}
             <div className="flex h-full items-end gap-1.5">
               {days.map((d) => {
-                const over = targets && d.kcal > targets.kcal * 1.05;
+                const dayCredit = credits?.[d.date] ?? 0;
+                const over = targets && d.kcal > (targets.kcal + dayCredit) * 1.05;
                 const isSel = d.date === selected;
                 // Alleen de gekozen dag en vandaag krijgen een getal: zeven getallen naast elkaar zijn op een telefoon onleesbaar.
                 const showValue = d.logged && (isSel || d.date === today);
@@ -114,7 +121,7 @@ export function WeekOverview({
                   <button
                     key={d.date}
                     onClick={() => onSelect(d.date)}
-                    aria-label={`${dayName}: ${d.logged ? `${fmt(d.kcal)} kcal` : "niets gelogd"}`}
+                    aria-label={`${dayName}: ${d.logged ? `${fmt(d.kcal)} kcal` : "niets gelogd"}${dayCredit > 0 ? `, doel + ${fmt(dayCredit)} kcal door beweging` : ""}`}
                     aria-current={isSel ? "date" : undefined}
                     className={`group relative flex h-full flex-1 items-end justify-center rounded-lg transition-colors ${isSel ? "bg-surface-2" : "hover:bg-surface-2/60"}`}
                   >
@@ -152,6 +159,7 @@ export function WeekOverview({
           {targets && (
             <p className="mt-2 flex items-center gap-1.5 text-[11px] text-muted" aria-hidden>
               <span className="inline-block w-4 border-t border-dashed border-muted" /> doel {fmt(targets.kcal)} kcal
+              {credits && Object.values(credits).some((c) => c > 0) ? " (+ beweging per dag)" : ""}
               <span className="ml-2 inline-block h-2 w-2 rounded-sm bg-warn" /> boven doel
             </p>
           )}

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { ChevronRightIcon, FlameIcon } from "@/components/Icons";
 import { MACRO_COLORS } from "@/components/nutrition/MacroSummary";
+import { activityCredit, applyCredit, useActivityDay, useActivitySettings } from "@/lib/activity";
 import { toISODate } from "@/lib/dates";
 import { computeTargets, type NutritionProfile } from "@/lib/nutrition/targets";
 import { supabase } from "@/lib/supabase";
@@ -51,12 +52,21 @@ export function NutritionCard({
   failed,
   today,
   profile,
+  userId,
 }: {
   week: FoodRow[] | undefined;
   failed: boolean;
   today: string;
   profile: NutritionProfile | null;
+  /** Voor "calorieën terugverdienen": zelfde dagdoel als op de voedingspagina. */
+  userId?: string | null;
 }) {
+  // Beweging van vandaag (alleen met toestemming en als terugverdienen aan staat), net als op de
+  // voedingspagina: anders tonen Home en Voeding een ander doel voor dezelfde dag.
+  const activitySettings = useActivitySettings(userId || null);
+  const pctCredit = activitySettings.data?.consented ? activitySettings.data.burn_credit_pct : 0;
+  const activityDay = useActivityDay(pctCredit > 0 ? userId || null : null, today);
+
   if (!week) {
     if (!failed) return <div className="skeleton h-[62px]" aria-label="Voeding laden" />;
     return <CompactRow title="Voeding" text="Nog niet geladen. Dit verschijnt zodra je verbinding hebt." />;
@@ -78,7 +88,9 @@ export function NutritionCard({
       fat: 0,
     });
   const plannedToday = food.filter((l) => l.planned).length;
-  const targets = computeTargets(profile);
+  const baseTargets = computeTargets(profile);
+  const credit = activityCredit(baseTargets, activityDay.day?.active_kcal ?? null, pctCredit);
+  const targets = baseTargets && credit > 0 ? applyCredit(baseTargets, credit) : baseTargets;
   const over = !!targets && targets.kcal > 0 && eaten.kcal > targets.kcal;
 
   return (
@@ -94,13 +106,26 @@ export function NutritionCard({
       </div>
       <div className="flex items-baseline gap-1.5">
         <span className="text-2xl font-extrabold tabular-nums">{fmt(eaten.kcal)}</span>
-        <span className="text-sm text-muted">{targets ? <>/ {fmt(targets.kcal)} kcal</> : "kcal"}</span>
+        <span className="text-sm text-muted">
+          {targets ? (
+            credit > 0 ? (
+              <>
+                / {fmt(targets.kcal - credit)} <span className="font-semibold text-accent">+ {fmt(credit)}</span> kcal
+              </>
+            ) : (
+              <>/ {fmt(targets.kcal)} kcal</>
+            )
+          ) : (
+            "kcal"
+          )}
+        </span>
         {targets && targets.kcal > 0 && (
           <span className="ml-auto text-xs tabular-nums text-muted">
             {over ? `${fmt(eaten.kcal - targets.kcal)} boven doel` : `nog ${fmt(targets.kcal - eaten.kcal)}`}
           </span>
         )}
       </div>
+      {credit > 0 && <p className="-mt-2 text-[11px] text-muted tabular-nums">Inclusief {fmt(credit)} kcal door beweging</p>}
       {targets ? (
         <div className="h-2 overflow-hidden rounded-full bg-surface-2">
           <div

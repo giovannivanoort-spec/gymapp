@@ -8,6 +8,7 @@ import { useUserId } from "@/components/AuthProvider";
 import { Avatar } from "@/components/Avatar";
 import { GroupFeed } from "@/components/GroupFeed";
 import { GroupLeaderboard } from "@/components/GroupLeaderboard";
+import { StepsLeaderboard } from "@/components/activity/StepsLeaderboard";
 import { ChevronRightIcon, PlusIcon, SparkleIcon, UserPlusIcon } from "@/components/Icons";
 import { AvatarStack } from "@/components/groups/AvatarStack";
 import { ConfirmSheet } from "@/components/groups/ConfirmSheet";
@@ -430,7 +431,10 @@ export default function GroupPage() {
 
           {tab === "ranglijst" &&
             (members.length > 0 ? (
-              <GroupLeaderboard members={members} userId={userId} groupId={id} attendance={attendanceByUser} />
+              <div className="space-y-6">
+                <GroupLeaderboard members={members} userId={userId} groupId={id} attendance={attendanceByUser} />
+                <StepsLeaderboard userId={userId} scope={{ scope: "group", groupId: id }} />
+              </div>
             ) : (
               <div className="card text-sm text-muted">Nog geen leden om te vergelijken.</div>
             ))}

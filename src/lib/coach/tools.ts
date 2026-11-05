@@ -741,6 +741,71 @@ export const TOOLS = [
   }),
 
   tool({
+    name: "get_activity",
+    description:
+      "Dagelijkse stappen en actieve kcal van de gebruiker zelf (schatting van horloge/telefoon of handmatig ingevoerd), plus zijn stappendoel. " +
+      "Kcal van wearables zijn onnauwkeurig (±30%): gebruik ze als indicatie, niet als exacte waarde. " +
+      "Werkt alleen als de gebruiker activiteit met de coach deelt (Profiel → Koppelingen).",
+    schema: z.object({
+      days: z.number().int().min(1).max(60).optional().describe("Aantal dagen terug (inclusief vandaag), standaard 14"),
+    }),
+    run: async ({ days = 14 }, { sb, userId }) => {
+      const missing = (e: { code?: string; message?: string }) =>
+        ["42P01", "42703", "42883", "PGRST202", "PGRST204", "PGRST205"].includes(e.code ?? "") || /does not exist|schema cache/i.test(e.message ?? "");
+      const { data: settings, error: settingsError } = await sb
+        .from("activity_settings")
+        .select("health_consent_at, coach_activity, step_goal")
+        .eq("user_id", userId)
+        .maybeSingle();
+      if (settingsError) {
+        if (missing(settingsError)) return { error: "Activiteit bijhouden is in deze app nog niet ingeschakeld." };
+        return { error: dbMessage(settingsError) };
+      }
+      const s = settings as { health_consent_at: string | null; coach_activity: boolean; step_goal: number } | null;
+      if (!s?.health_consent_at || !s.coach_activity) {
+        return { error: "De gebruiker heeft activiteit niet gedeeld met de coach (Profiel → Koppelingen)." };
+      }
+      const since = daysAgo(days - 1);
+      const { data, error } = await sb
+        .from("daily_activity_effective")
+        .select("date, source, steps, active_kcal")
+        // Alleen de eigen activiteit, ook als vrienden de hunne delen.
+        .eq("user_id", userId)
+        .gte("date", since)
+        .order("date")
+        .limit(100);
+      if (error) return { error: dbMessage(error) };
+      type Row = { date: string; source: string; steps: number | null; active_kcal: number | null };
+      const SOURCE: Record<string, string> = {
+        manual: "handmatig",
+        health_connect: "Health Connect",
+        healthkit: "Apple Health",
+        garmin: "Garmin",
+        shortcut: "snelkoppeling",
+      };
+      const rows = ((data ?? []) as Row[]).map((r) => ({
+        date: r.date,
+        // Apple Health meldt 0 stappen als er niets gemeten is: dat is geen data.
+        steps: r.steps == null || (r.source === "healthkit" && Number(r.steps) === 0) ? null : Number(r.steps),
+        active_kcal: r.active_kcal == null ? null : Number(r.active_kcal),
+        source: SOURCE[r.source] ?? r.source,
+      }));
+      const stepGoal = Number(s.step_goal) || 7000;
+      const withSteps = rows.filter((r) => r.steps != null);
+      const total = withSteps.reduce((a, r) => a + r.steps!, 0);
+      return {
+        step_goal: stepGoal,
+        period: { from: since, days },
+        days_with_data: withSteps.length,
+        avg_steps: withSteps.length ? Math.round(total / withSteps.length) : null,
+        days_goal_met: withSteps.filter((r) => r.steps! >= stepGoal).length,
+        note: "active_kcal is een schatting (±30%); dagen zonder data ontbreken (niet als nul tellen).",
+        days: rows,
+      };
+    },
+  }),
+
+  tool({
     name: "get_group_check",
     description:
       "Groepscheck voor de trainer: per lid het aantal trainingen, gemiste groepstrainingen, de laatste training en " +

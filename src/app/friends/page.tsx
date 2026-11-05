@@ -6,11 +6,13 @@ import { AppShell } from "@/components/AppShell";
 import { useAuth, useUserId } from "@/components/AuthProvider";
 import { Avatar } from "@/components/Avatar";
 import { FriendRow, WithSummaries, type PersonSummary } from "@/components/FriendCard";
+import { StepsLeaderboard } from "@/components/activity/StepsLeaderboard";
 import { CheckIcon, CloseIcon, ShareIcon, UserPlusIcon, UsersIcon } from "@/components/Icons";
 import { FriendCode, showFlashToast, useFlash } from "@/components/social/FriendCode";
 import { RetryIcon } from "@/components/social/icons";
 import { toast } from "@/components/ui/Toast";
 import { useCached } from "@/lib/cache";
+import type { LeaderboardScope } from "@/lib/activity";
 import { toISODate } from "@/lib/dates";
 import {
   clearFriendsFlash,
@@ -36,6 +38,8 @@ import { isMissingSchemaError, supabase } from "@/lib/supabase";
 import { PUBLIC_PROFILE_COLUMNS_NO_PHOTO } from "@/lib/types";
 
 type RowError = { id: string; text: string };
+
+const FRIENDS_SCOPE: LeaderboardScope = { scope: "friends" };
 
 export default function FriendsPage() {
   const userId = useUserId();
@@ -333,6 +337,8 @@ export default function FriendsPage() {
             );
           }}
         </WithSummaries>
+
+        {hasFriends && <StepsLeaderboard userId={userId} scope={FRIENDS_SCOPE} />}
 
         {!noFriends && suggestionsSection}
 

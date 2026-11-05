@@ -14,6 +14,7 @@ import { SwipeRow } from "@/components/nutrition/SwipeRow";
 import { shiftDate as shift, WeekOverview } from "@/components/nutrition/WeekOverview";
 import { DataStatus } from "@/components/platform/DataStatus";
 import { toast, type ToastAction } from "@/components/ui/Toast";
+import { activityCredit, applyCredit, useActivityDay, useActivitySettings, useMyActivity } from "@/lib/activity";
 import { getCached, setCached, useCachedState } from "@/lib/cache";
 import { formatDate, relativeDay, toISODate } from "@/lib/dates";
 import { fmt } from "@/lib/nutrition/format";
@@ -120,6 +121,15 @@ export default function NutritionPage() {
   }, []);
 
   const future = date > today;
+
+  // Beweging van deze dag (alleen met toestemming; niet voor dagen in de toekomst). Met "calorieën
+  // terugverdienen" aan komt alleen beweging bóven wat het doel al verwacht erbij (zie activityCredit).
+  const activitySettings = useActivitySettings(session ? uid : null);
+  const consented = activitySettings.data?.consented === true;
+  const activityDay = useActivityDay(consented && !future ? uid : null, date);
+  const activeKcal = consented && !future ? (activityDay.day?.active_kcal ?? null) : null;
+  const credit = activityCredit(targets, activeKcal, activitySettings.data?.burn_credit_pct ?? 0);
+  const dayTargets = targets && credit > 0 ? applyCredit(targets, credit) : targets;
   const persistFor = (d: string) => d >= shift(today, -PERSIST_DAYS) && d <= shift(today, PERSIST_DAYS);
   const persistDay = persistFor(date);
 
@@ -133,6 +143,16 @@ export default function NutritionPage() {
   // Week: de laatste 7 dagen, of de week tot de gekozen dag als je verder terugbladert.
   const weekEnd = date >= shift(today, -6) ? today : date;
   const weekKey = nutritionKeys.range(uid, shift(weekEnd, -6), weekEnd);
+  // Zelfde extra kcal per dag in het weekoverzicht, zodat een dag daar niet "boven doel" staat terwijl
+  // de dagsamenvatting hierboven nog ruimte laat zien.
+  const creditPct = consented ? (activitySettings.data?.burn_credit_pct ?? 0) : 0;
+  const weekActivity = useMyActivity(creditPct > 0 ? uid : null, shift(weekEnd, -6), weekEnd);
+  const weekCredits: Record<string, number> = {};
+  for (const a of weekActivity.data ?? []) {
+    if (a.date > today) continue;
+    const c = activityCredit(targets, a.active_kcal, creditPct);
+    if (c > 0) weekCredits[a.date] = c;
+  }
   const week = useCachedState(weekKey, () => freshFetch(() => fetchLogs(shift(weekEnd, -6), weekEnd)), {
     persist: weekEnd === today,
     maxAge: 30_000,
@@ -530,7 +550,14 @@ export default function NutritionPage() {
                   </div>
                 </div>
               ) : (
-                <MacroSummary totals={totals} targets={targets} fiber={fiber} mode={future ? "planned" : "eaten"} plannedKcal={pendingKcal} />
+                <MacroSummary
+                  totals={totals}
+                  targets={dayTargets}
+                  fiber={fiber}
+                  mode={future ? "planned" : "eaten"}
+                  plannedKcal={pendingKcal}
+                  activity={activeKcal != null ? { credit, activeKcal } : null}
+                />
               )}
               {!targets && profile && (
                 <Link href="/profile#voeding" className="flex min-h-11 items-center justify-between gap-2 rounded-xl bg-surface-2 px-3 py-2 text-xs text-muted">
@@ -659,6 +686,7 @@ export default function NutritionPage() {
           error={week.error != null}
           onRetry={week.retry}
           state={week}
+          credits={weekCredits}
         />
 
         <p className="text-center text-xs text-muted">

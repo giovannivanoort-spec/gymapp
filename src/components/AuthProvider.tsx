@@ -28,7 +28,8 @@ const AuthContext = createContext<AuthState>({
   refreshProfile: async () => {},
 });
 
-const PUBLIC_PATHS = ["/login"];
+/** Pagina's die zonder inloggen te zien zijn (zonder navigatie). /privacy moet openbaar blijven (winkels). */
+const PUBLIC_PATHS = ["/login", "/privacy"];
 /** Na zoveel ms laden bieden we "opnieuw proberen" en "uitloggen" aan in plaats van eindeloos te wachten. */
 const SLOW_AFTER_MS = 8000;
 /** Pad van het scherm voor een nieuw wachtwoord (na de link uit de herstelmail). */

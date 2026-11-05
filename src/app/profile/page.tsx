@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { ActivitySettings } from "@/components/activity/ActivitySettings";
 import { AppShell } from "@/components/AppShell";
 import { signOut, useAuth } from "@/components/AuthProvider";
 import { usePersonSummary } from "@/components/FriendCard";
@@ -394,6 +395,8 @@ export default function ProfilePage() {
             </button>
           </form>
         </section>
+
+        <ActivitySettings />
 
         <section className="space-y-3">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">Voorkeuren</h2>

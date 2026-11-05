@@ -25,6 +25,7 @@ export const TOOL_LABELS: Record<string, string> = {
   plan_group_workout: "Training klaarzetten",
   get_strength_ranks: "Ranks bekijken",
   get_nutrition: "Voeding bekijken",
+  get_activity: "Activiteit bekijken",
   get_group_lifts: "Startgewichten bepalen",
 };
 
