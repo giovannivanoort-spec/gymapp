@@ -9,10 +9,10 @@ import { Avatar, ProfileButton } from "@/components/Avatar";
 import { FriendChip } from "@/components/FriendCard";
 import {
   BookIcon,
-  CalendarIcon,
   ChevronRightIcon,
   DumbbellIcon,
   PlusIcon,
+  SparkleIcon,
   TrophyIcon,
   UserPlusIcon,
   UsersIcon,
@@ -30,10 +30,10 @@ import { computeTargets, type NutritionProfile } from "@/lib/nutrition/targets";
 import { sumMacros } from "@/lib/nutrition/types";
 import { TIERS } from "@/lib/ranks";
 import { errorMessage, supabase } from "@/lib/supabase";
-import type { Group, Role, Workout } from "@/lib/types";
+import { fetchMyGroups, myGroupsKey } from "@/lib/groups";
+import type { Workout } from "@/lib/types";
 import { useRanks } from "@/lib/useRanks";
 
-type MyGroup = Group & { role: Role; memberCount: number };
 type UpcomingWorkout = Workout & { groups: { name: string } | null; workout_exercises: { count: number }[] };
 
 function greeting() {
@@ -43,7 +43,7 @@ function greeting() {
 
 const QUICK = [
   { href: "/exercises", label: "Oefeningen", icon: BookIcon },
-  { href: "/progress", label: "Kalender", icon: CalendarIcon },
+  { href: "/coach", label: "Coach", icon: SparkleIcon },
   { href: "/ranks", label: "Ranks", icon: TrophyIcon },
   { href: "/friends", label: "Vrienden", icon: UsersIcon },
 ];
@@ -70,23 +70,7 @@ export default function HomePage() {
   const today = toISODate();
 
   // Groepen en komende trainingen: tegelijk opgehaald en onthouden tussen bezoeken.
-  const groups =
-    useCached(
-      `home:groups:${userId}`,
-      async () => {
-        const { data: memberships } = await supabase
-          .from("group_members")
-          .select("role, groups(*, group_members(count))")
-          .eq("user_id", userId);
-        return (memberships ?? [])
-          .filter((m) => m.groups)
-          .map((m) => {
-            const g = m.groups as unknown as Group & { group_members: { count: number }[] };
-            return { ...g, role: m.role as Role, memberCount: g.group_members[0]?.count ?? 1 } as MyGroup;
-          });
-      },
-      { persist: true },
-    ) ?? null;
+  const groups = useCached(myGroupsKey(userId), () => fetchMyGroups(userId), { persist: true }) ?? null;
   const workouts =
     useCached(
       `home:workouts:${userId}`,
@@ -104,7 +88,9 @@ export default function HomePage() {
     ) ?? [];
   const food = useCached(`home:food:${userId}:${today}`, () => fetchLogs(today, today), { persist: true });
   const targets = computeTargets(profile as NutritionProfile | null);
-  const eaten = food ? sumMacros(food) : null;
+  // Gepland eten telt pas mee als het bevestigd is.
+  const eaten = food ? sumMacros(food.filter((l) => !l.planned)) : null;
+  const plannedToday = food?.filter((l) => l.planned).length ?? 0;
 
   const todays = workouts.filter((w) => w.date === today);
   const later = workouts.filter((w) => w.date !== today);
@@ -124,6 +110,13 @@ export default function HomePage() {
               {firstName && <span className="text-accent">, {firstName}</span>}
             </h1>
           </div>
+          <Link
+            href="/coach"
+            aria-label="Coach"
+            className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-full border border-line bg-surface text-accent transition hover:border-muted active:scale-95"
+          >
+            <SparkleIcon size={18} />
+          </Link>
           <Link
             href="/friends"
             aria-label="Vrienden"
@@ -225,7 +218,14 @@ export default function HomePage() {
         <Link href="/nutrition" className="card animate-fade-up block space-y-3 hover:border-muted">
           <div className="flex items-center justify-between">
             <p className="text-sm font-semibold uppercase tracking-wide text-muted">Voeding vandaag</p>
-            <ChevronRightIcon className="text-muted" />
+            <span className="flex items-center gap-2">
+              {plannedToday > 0 && (
+                <span className="rounded-full bg-accent/15 px-2 py-0.5 text-[11px] font-semibold text-accent">
+                  {plannedToday} te bevestigen
+                </span>
+              )}
+              <ChevronRightIcon className="text-muted" />
+            </span>
           </div>
           {!eaten ? (
             <div className="skeleton h-16" />

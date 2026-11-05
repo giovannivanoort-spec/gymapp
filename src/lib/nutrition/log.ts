@@ -1,5 +1,6 @@
 "use client";
 
+import { toISODate } from "../dates";
 import { supabase } from "../supabase";
 import { macrosFor, type Food, type Meal, type Per100 } from "./types";
 
@@ -18,6 +19,8 @@ export type FoodLog = {
   protein: number;
   carbs: number;
   fat: number;
+  /** Vooruit gepland: telt pas mee na bevestigen. */
+  planned: boolean;
   created_at: string;
 };
 
@@ -33,6 +36,7 @@ function normalize(row: Record<string, unknown>): FoodLog {
     protein: num(row.protein),
     carbs: num(row.carbs),
     fat: num(row.fat),
+    planned: !!row.planned,
   };
 }
 
@@ -59,6 +63,8 @@ export async function addLog(food: Food, grams: number, meal: Meal, date: string
     portion_label: portionLabel ?? null,
     per100: food.per100,
     ...m,
+    // Eten voor een latere dag is een planning; die bevestig je op de dag zelf.
+    planned: date > toISODate(),
   });
   if (error) throw error;
 }
@@ -155,4 +161,21 @@ export async function resizeImage(file: File, max = 1024, quality = 0.82): Promi
   canvas.getContext("2d")!.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   bitmap.close();
   return canvas.toDataURL("image/jpeg", quality);
+}
+
+/** Gepland eten bevestigen: het telt vanaf nu mee. */
+export async function confirmLog(id: string) {
+  const { error } = await supabase.from("food_logs").update({ planned: false }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function confirmLogs(ids: string[]) {
+  if (!ids.length) return;
+  const { error } = await supabase.from("food_logs").update({ planned: false }).in("id", ids);
+  if (error) throw error;
+}
+
+/** Telt mee in de totalen: bevestigd eten, of alles bij een dag in de toekomst (als planning). */
+export function counts(log: FoodLog, today: string = toISODate()) {
+  return !log.planned || log.date > today;
 }

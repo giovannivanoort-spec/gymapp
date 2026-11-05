@@ -172,6 +172,7 @@ function Coach() {
   return (
     <AppShell
       title="Coach"
+      back="/"
       action={
         <div className="flex gap-1">
           <button className="btn-ghost px-3 py-1.5 text-xs" onClick={loadConversations}>

@@ -4,12 +4,23 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { useAuth } from "@/components/AuthProvider";
-import { ChevronRightIcon, CloseIcon, PlusIcon } from "@/components/Icons";
+import { CalendarIcon, CheckIcon, ChevronRightIcon, CloseIcon, PlusIcon } from "@/components/Icons";
 import { Sheet } from "@/components/Sheet";
 import { AddFoodSheet } from "@/components/nutrition/AddFoodSheet";
 import { MACRO_COLORS, MacroSummary } from "@/components/nutrition/MacroSummary";
 import { formatDate, toISODate } from "@/lib/dates";
-import { addLog, deleteLog, fetchLogs, logToFood, saveMeal, updateLogGrams, type FoodLog } from "@/lib/nutrition/log";
+import {
+  addLog,
+  confirmLog,
+  confirmLogs,
+  counts,
+  deleteLog,
+  fetchLogs,
+  logToFood,
+  saveMeal,
+  updateLogGrams,
+  type FoodLog,
+} from "@/lib/nutrition/log";
 import { computeTargets, type NutritionProfile, type Targets } from "@/lib/nutrition/targets";
 import { MEALS, sumMacros, type Meal } from "@/lib/nutrition/types";
 import { errorMessage } from "@/lib/supabase";
@@ -37,9 +48,28 @@ export default function NutritionPage() {
     fetchLogs(shift(toISODate(), -6), toISODate()).then(setWeek);
   }, [date, version]);
 
-  const totals = sumMacros((logs ?? []).map((l) => l));
   const today = toISODate();
-  const label = date === today ? "Vandaag" : date === shift(today, -1) ? "Gisteren" : formatDate(date, { weekday: "long", month: "short" });
+  const future = date > today;
+  const totals = sumMacros((logs ?? []).filter((l) => counts(l, today)));
+  const pending = !future ? (logs ?? []).filter((l) => l.planned) : [];
+  const label =
+    date === today
+      ? "Vandaag"
+      : date === shift(today, -1)
+        ? "Gisteren"
+        : date === shift(today, 1)
+          ? "Morgen"
+          : formatDate(date, { weekday: "long", month: "short" });
+
+  async function confirm(log: FoodLog, ate: boolean) {
+    try {
+      if (ate) await confirmLog(log.id);
+      else await deleteLog(log.id);
+      reload();
+    } catch (err) {
+      alert(errorMessage(err));
+    }
+  }
 
   async function copyFromYesterday(meal: Meal) {
     const prev = (await fetchLogs(shift(date, -1), shift(date, -1))).filter((l) => l.meal === meal);
@@ -73,7 +103,7 @@ export default function NutritionPage() {
           </button>
           <button
             onClick={() => setDate(shift(date, 1))}
-            disabled={date >= today}
+            disabled={date >= shift(today, 7)}
             className="flex h-9 w-9 items-center justify-center rounded-xl text-muted hover:bg-surface-2 hover:text-ink disabled:opacity-30"
             aria-label="Volgende dag"
           >
@@ -81,7 +111,41 @@ export default function NutritionPage() {
           </button>
         </div>
 
+        {future && (
+          <div className="card flex items-start gap-3 border-dashed p-3 text-sm">
+            <CalendarIcon size={18} className="mt-0.5 shrink-0 text-accent" />
+            <p className="text-muted">
+              <span className="font-semibold text-ink">Vooruit plannen.</span> Wat je hier toevoegt staat als gepland. Op die dag
+              tik je per item op het vinkje als je het echt hebt gegeten, of op het kruisje als dat niet zo is.
+            </p>
+          </div>
+        )}
+
+        {pending.length > 0 && (
+          <div className="card animate-fade-up flex items-center gap-3 border-accent/40 bg-accent/5 p-3">
+            <CalendarIcon size={18} className="shrink-0 text-accent" />
+            <p className="min-w-0 flex-1 text-sm">
+              <span className="font-semibold">{pending.length} gepland</span>
+              <span className="text-muted"> · bevestig wat je hebt gegeten</span>
+            </p>
+            <button
+              className="btn-primary h-8 shrink-0 px-3 text-xs"
+              onClick={async () => {
+                try {
+                  await confirmLogs(pending.map((l) => l.id));
+                  reload();
+                } catch (err) {
+                  alert(errorMessage(err));
+                }
+              }}
+            >
+              Alles gegeten
+            </button>
+          </div>
+        )}
+
         <section className="card animate-scale-in space-y-3">
+          {future && <p className="text-xs font-semibold uppercase tracking-wide text-muted">Gepland voor deze dag</p>}
           {logs === null ? <div className="skeleton h-32" /> : <MacroSummary totals={totals} targets={targets} />}
           {!targets && (
             <Link href="/profile#voeding" className="flex items-center justify-between rounded-xl bg-surface-2 px-3 py-2 text-xs text-muted">
@@ -92,7 +156,7 @@ export default function NutritionPage() {
 
         {MEALS.map((m, mi) => {
           const items = (logs ?? []).filter((l) => l.meal === m.id);
-          const t = sumMacros(items);
+          const t = sumMacros(items.filter((l) => counts(l, today)));
           return (
             <section key={m.id} className="card animate-fade-up space-y-2 p-0" style={{ "--i": mi } as React.CSSProperties}>
               <div className="flex items-center justify-between px-4 pt-3">
@@ -108,7 +172,31 @@ export default function NutritionPage() {
               </div>
               {items.length > 0 && (
                 <ul className="divide-y divide-line border-t border-line">
-                  {items.map((l) => (
+                  {items.map((l) =>
+                    l.planned && !future ? (
+                      <li key={l.id} className="flex items-center gap-2 bg-surface-2/40 px-4 py-2">
+                        <div className="min-w-0 flex-1 opacity-70">
+                          <p className="truncate text-sm">{l.name}</p>
+                          <p className="truncate text-xs text-muted">
+                            Gepland · {l.portion_label ?? `${nl(l.grams, 1)} g`} · {nl(l.kcal)} kcal
+                          </p>
+                        </div>
+                        <button
+                          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-line text-muted transition hover:border-danger hover:text-danger active:scale-90"
+                          onClick={() => confirm(l, false)}
+                          aria-label={`${l.name} niet gegeten`}
+                        >
+                          <CloseIcon size={16} />
+                        </button>
+                        <button
+                          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent text-accent-ink transition hover:brightness-110 active:scale-90"
+                          onClick={() => confirm(l, true)}
+                          aria-label={`${l.name} gegeten`}
+                        >
+                          <CheckIcon size={16} />
+                        </button>
+                      </li>
+                    ) : (
                     <li key={l.id}>
                       <button onClick={() => setEditing(l)} className="flex w-full items-center justify-between gap-3 px-4 py-2.5 text-left hover:bg-surface-2">
                         <div className="min-w-0">
@@ -117,10 +205,14 @@ export default function NutritionPage() {
                             {[l.brand, l.portion_label ?? `${nl(l.grams, 1)} g`].filter(Boolean).join(" · ")}
                           </p>
                         </div>
-                        <span className="shrink-0 text-sm tabular-nums">{nl(l.kcal)}</span>
+                        <span className="flex shrink-0 items-center gap-2 text-sm tabular-nums">
+                          {l.planned && <span className="chip px-2 py-0.5 text-[10px]">Gepland</span>}
+                          {nl(l.kcal)}
+                        </span>
                       </button>
                     </li>
-                  ))}
+                    ),
+                  )}
                 </ul>
               )}
               <div className="flex gap-4 px-4 pb-3 text-xs">
@@ -137,7 +229,7 @@ export default function NutritionPage() {
           );
         })}
 
-        <WeekOverview logs={week} targets={targets} today={today} />
+        <WeekOverview logs={week.filter((l) => !l.planned)} targets={targets} today={today} />
 
         <p className="text-center text-xs text-muted">
           Doelen aanpassen (activiteit, afvallen of aankomen):{" "}

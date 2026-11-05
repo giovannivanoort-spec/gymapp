@@ -4,11 +4,12 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "./AuthProvider";
 import { ProfileButton } from "./Avatar";
+import { NewWorkoutButton } from "./NewWorkoutButton";
 
 const NAV = [
   { href: "/", label: "Home", icon: HomeIcon },
   { href: "/nutrition", label: "Voeding", icon: FoodIcon },
-  { href: "/coach", label: "Coach", icon: CoachIcon },
+  null,
   { href: "/progress", label: "Progressie", icon: ChartIcon },
   { href: "/templates", label: "Schema's", icon: ListIcon },
 ];
@@ -55,7 +56,9 @@ export function AppShell({ title, back, action, children }: Props) {
 
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-bg/90 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl">
         <div className="mx-auto grid max-w-2xl grid-cols-5">
-          {NAV.map(({ href, label, icon: Icon }) => {
+          {NAV.map((item) => {
+            if (!item) return session ? <NewWorkoutButton key="new" /> : <span key="new" />;
+            const { href, label, icon: Icon } = item;
             const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
             return (
               <Link
@@ -103,14 +106,6 @@ function FoodIcon() {
   return (
     <svg {...iconProps}>
       <path d="M7 3v8a2 2 0 01-2 2v8M3 3v6a2 2 0 002 2M7 3v6M17 21v-8c-2 0-3-2-3-5s1-5 3-5v18" />
-    </svg>
-  );
-}
-function CoachIcon() {
-  return (
-    <svg {...iconProps}>
-      <path d="M12 3l1.8 4.2L18 9l-4.2 1.8L12 15l-1.8-4.2L6 9l4.2-1.8z" />
-      <path d="M18.5 15l.8 1.7 1.7.8-1.7.8-.8 1.7-.8-1.7-1.7-.8 1.7-.8z" />
     </svg>
   );
 }

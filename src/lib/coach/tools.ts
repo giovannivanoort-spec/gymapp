@@ -411,7 +411,7 @@ export const TOOLS = [
       const since = new Date(Date.now() - (days - 1) * 86400000).toLocaleDateString("sv-SE", { timeZone: "Europe/Amsterdam" });
       const [{ data: profile }, { data: logs, error }] = await Promise.all([
         sb.from("profiles").select("*").eq("id", userId).single(),
-        sb.from("food_logs").select("date, meal, name, grams, kcal, protein, carbs, fat").gte("date", since).order("date").limit(2000),
+        sb.from("food_logs").select("date, meal, name, grams, kcal, protein, carbs, fat").gte("date", since).eq("planned", false).order("date").limit(2000),
       ]);
       if (error) return { error: error.message };
       const targets = computeTargets(profile);
