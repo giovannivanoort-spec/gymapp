@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Achtergrond van Spotter (gelijk aan APP_BG in src/lib/brand.ts). -->
+    <color name="spotter_bg">#0b0d10</color>
+</resources>

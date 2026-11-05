@@ -42,3 +42,16 @@ yarn-error.log*
 next-env.d.ts
 
 .vercel
+
+# android (Capacitor). De map android/ zelf wordt WEL gecommit; android/.gitignore regelt de rest
+# (ook de gekopieerde web-assets en de gegenereerde capacitor.config.json).
+/android/app/build/
+/android/build/
+/android/.gradle/
+/android/.idea/
+/android/.kotlin/
+/android/local.properties
+/android/capacitor-cordova-android-plugins/build/
+# Ondertekeningssleutels nooit committen (bewaar ze veilig, zonder sleutel geen updates in de Play Store).
+*.jks
+*.keystore

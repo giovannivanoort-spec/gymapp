@@ -9,6 +9,8 @@ import type { Profile } from "@/lib/types";
 import { LogOutIcon, RefreshIcon } from "./Icons";
 import { OfflineSync } from "./OfflineSync";
 import { SetupNotice } from "./SetupNotice";
+import { NativeHealthSync } from "./activity/NativeHealthSync";
+import { NativeBackButton } from "./platform/NativeBackButton";
 import { ServiceWorkerBridge } from "./platform/ServiceWorkerBridge";
 import { Splash } from "./shell/Splash";
 import { useOffline } from "./ui/States";
@@ -255,6 +257,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return (
       <AuthContext.Provider value={value}>
         {loading && slow ? <SlowStart /> : <Splash />}
+        {/* Android-app: ook tijdens het laden moet de terugknop iets doen. */}
+        <NativeBackButton />
       </AuthContext.Provider>
     );
   }
@@ -266,8 +270,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         <>
           <OfflineSync />
           <ServiceWorkerBridge />
+          {/* Alleen in de Android-app: Health Connect bij openen en terugkeren synchroniseren. */}
+          <NativeHealthSync userId={session.user.id} />
         </>
       )}
+      <NativeBackButton />
       <Toaster />
     </AuthContext.Provider>
   );

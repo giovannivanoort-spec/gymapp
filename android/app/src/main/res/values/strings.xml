@@ -1,0 +1,14 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Spotter</string>
+    <string name="title_activity_main">Spotter</string>
+    <string name="package_name">nl.myspotter.app</string>
+    <string name="custom_url_scheme">nl.myspotter.app</string>
+    <!--
+      Privacyverklaring die Health Connect toont bij "Waarom vraagt Spotter dit?" en in de
+      rechteninstellingen (PermissionsRationaleActivity van @capgo/capacitor-health leest deze naam).
+      Moet dezelfde URL zijn als in de Play Store-vermelding.
+      TODO: https://myspotter.nl/privacy zodra het domein live is.
+    -->
+    <string name="health_connect_privacy_policy_url" translatable="false">https://gymapp-eight-kappa.vercel.app/privacy</string>
+</resources>

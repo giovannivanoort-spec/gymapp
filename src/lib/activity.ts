@@ -36,8 +36,8 @@
  *
  * Schrijven (gooit bij een fout; toon activityErrorMessage(err))
  * - saveActivitySettings(userId, patch) → ActivitySettingsState  (store/share/coach/stepGoal/burnCreditPct)
- * - upsertDailyActivity(source, days) → aantal opgeslagen dagen (ENIGE schrijfroute; de server accepteert
- *   voorlopig alleen "manual", toestelbronnen komen met de native apps)
+ * - upsertDailyActivity(source, days) → aantal opgeslagen dagen (ENIGE schrijfroute; "manual" en, na
+ *   supabase/upgrade-activity-native.sql, ook "health_connect" en "healthkit" uit de apps; zie lib/native/health.ts)
  * - saveManualActivity(userId, { date, steps, active_kcal }) / clearManualActivity(userId, date)
  * - deleteAllActivity(userId) → al je dagen wissen (toestemming blijft staan)
  * - validateManualEntry(entry) → Nederlandse foutmelding of null (zelfde grenzen als de server)

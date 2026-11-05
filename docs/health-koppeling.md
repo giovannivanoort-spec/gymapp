@@ -60,6 +60,8 @@ Er is nog geen automatische bron. Gebruikers voeren stappen en actieve kcal zelf
 
 ### 3.2 Android (stap 2)
 
+> **Gebouwd (nov 2026):** zie `docs/android-app.md` voor wat er staat, hoe je de APK bouwt en installeert, en wat er nog ontbreekt. De server accepteert toestelbronnen na `supabase/upgrade-activity-native.sql` (gekozen optie: de RPC laat `health_connect` en `healthkit` toe, met dezelfde controles en hooguit 30 dagen terug).
+
 ```
 Garmin / Galaxy Watch / Fitbit / Xiaomi ──► hun eigen app ──► Health Connect (op de telefoon)
                                                                    │  aggregate per dag (ontdubbeld)

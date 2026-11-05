@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useId, useRef, useState } from "react";
 import { ActivityEntrySheet } from "@/components/activity/ActivityEntrySheet";
 import { ConsentSheet } from "@/components/activity/ConsentSheet";
+import { HealthConnectPanel } from "@/components/activity/HealthConnectPanel";
 import { StepsIcon } from "@/components/activity/icons";
 import { useAuth } from "@/components/AuthProvider";
 import { ChevronRightIcon, InfoIcon, LockIcon } from "@/components/Icons";
@@ -11,7 +12,6 @@ import { LoadError } from "@/components/platform/LoadError";
 import { ConfirmSheet } from "@/components/social/ConfirmSheet";
 import { PhoneIcon, TrashIcon } from "@/components/social/icons";
 import { toast } from "@/components/ui/Toast";
-import { APP_NAME } from "@/lib/brand";
 import {
   ACTIVITY_LIMITS,
   activityErrorMessage,
@@ -20,6 +20,7 @@ import {
   useActivitySettings,
   type ActivitySettingsPatch,
 } from "@/lib/activity";
+import { disconnectHealth, healthSyncInFlight, useHealthLink } from "@/lib/native/health";
 
 /** Na zo lang stilstaan wordt een gewijzigd stappendoel opgeslagen. */
 const GOAL_SAVE_DELAY = 700;
@@ -28,7 +29,8 @@ const fmtSteps = (n: number) => n.toLocaleString("nl-NL");
 
 /**
  * Profiel → "Koppelingen en activiteit": toestemming voor gezondheidsgegevens (AVG), delen,
- * AI-coach, stappendoel, status van Health Connect en Apple Health, handmatig invoeren en alles
+ * AI-coach, stappendoel, Health Connect (in de Android-app echt verbinden en synchroniseren, op het
+ * web uitleg) en Apple Health, handmatig invoeren en alles
  * verwijderen. Zonder upgrade-activity.sql een rustige "nog niet ingeschakeld"-melding.
  */
 export function ActivitySettings() {
@@ -45,6 +47,9 @@ export function ActivitySettings() {
   const [goalDraft, setGoalDraft] = useState<number | null>(null);
   const goalTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const goalPending = useRef<number | null>(null);
+  /** Wat er moet gebeuren zodra de toestemming gegeven is (bijv. verder met Health Connect verbinden). */
+  const afterConsent = useRef<(() => void) | null>(null);
+  const healthLink = useHealthLink(userId);
   const ids = useId();
 
   // Een nog niet opgeslagen stappendoel alsnog opslaan bij weggaan van de pagina.
@@ -92,8 +97,16 @@ export function ActivitySettings() {
     }, GOAL_SAVE_DELAY);
   }
 
+  /** Health Connect op dit toestel ontkoppelen en een lopende sync laten aflopen, zodat die niets terugzet. */
+  async function stopHealthSync(uid: string) {
+    disconnectHealth(uid);
+    await healthSyncInFlight()?.catch(() => {});
+  }
+
   async function withdraw() {
     if (!userId) return;
+    // Geen toestemming meer: ook de Health Connect-koppeling op dit toestel vergeten.
+    await stopHealthSync(userId);
     await saveActivitySettings(userId, { store: false });
     setWithdrawOpen(false);
     toast.success("Activiteit bijhouden staat uit. Je gegevens zijn verwijderd.");
@@ -101,9 +114,17 @@ export function ActivitySettings() {
 
   async function removeAll() {
     if (!userId) return;
+    // Anders haalt de volgende automatische sync de laatste dagen meteen weer op uit Health Connect.
+    const wasLinked = healthLink.connected;
+    await stopHealthSync(userId);
     await deleteAllActivity(userId);
     setDeleteOpen(false);
-    toast.success("Al je activiteitsgegevens zijn verwijderd");
+    toast.success(wasLinked ? "Al je activiteitsgegevens zijn verwijderd en Health Connect is ontkoppeld" : "Al je activiteitsgegevens zijn verwijderd");
+  }
+
+  function requestConsent(then?: () => void) {
+    afterConsent.current = then ?? null;
+    setConsentOpen(true);
   }
 
   const header = (
@@ -165,7 +186,7 @@ export function ActivitySettings() {
               <span className="font-semibold">De uitleg over je activiteitsgegevens is gewijzigd.</span>{" "}
               <span className="text-muted">Lees hem opnieuw en geef opnieuw toestemming. Je gegevens blijven staan.</span>
             </p>
-            <button type="button" className="btn-primary min-h-11 px-4 text-xs" onClick={() => setConsentOpen(true)}>
+            <button type="button" className="btn-primary min-h-11 px-4 text-xs" onClick={() => requestConsent()}>
               Bekijken
             </button>
           </div>
@@ -186,7 +207,7 @@ export function ActivitySettings() {
             on={consented}
             busy={busy === "store"}
             disabled={busy !== null}
-            onToggle={() => (consented ? setWithdrawOpen(true) : setConsentOpen(true))}
+            onToggle={() => (consented ? setWithdrawOpen(true) : requestConsent())}
           />
           <SwitchRow
             id={`${ids}-share`}
@@ -289,30 +310,7 @@ export function ActivitySettings() {
 
       {/* Koppelingen met telefoon en horloge */}
       <div className="card divide-y divide-line p-0">
-        <details className="group">
-          <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-4 py-3 transition hover:bg-surface-2/40 [&::-webkit-details-marker]:hidden">
-            <PhoneIcon size={18} className="shrink-0 text-muted" />
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium">Health Connect</p>
-              <p className="text-xs text-muted">Android: Garmin, Samsung Health, Google Health en meer</p>
-            </div>
-            <StatusPill>Android-app, binnenkort</StatusPill>
-            <ChevronRightIcon size={16} className="shrink-0 text-muted transition-transform group-open:rotate-90" />
-          </summary>
-          <div className="space-y-2 px-4 pb-4 text-xs text-muted">
-            <p>
-              Met de Android-app van {APP_NAME} worden je stappen en actieve kcal straks automatisch opgehaald uit Health Connect. Zo werkt
-              het dan:
-            </p>
-            <ol className="list-decimal space-y-1 pl-5">
-              <li>Garmin Connect, Samsung Health en Google Health (Fitbit) schrijven naar Health Connect.</li>
-              <li>Zet dat aan in de instellingen van die app.</li>
-              <li>Zet in Health Connect onder App-prioriteit de app van je horloge bovenaan, zodat stappen niet dubbel tellen.</li>
-              <li>Garmin Connect werkt met Health Connect vanaf Android 14.</li>
-            </ol>
-            <p>Tot die tijd kun je je stappen handmatig invoeren.</p>
-          </div>
-        </details>
+        <HealthConnectPanel userId={userId} consented={consented} onRequestConsent={requestConsent} />
         <div className="flex min-h-12 items-center gap-3 px-4 py-3">
           <PhoneIcon size={18} className="shrink-0 text-muted" />
           <div className="min-w-0 flex-1">
@@ -341,10 +339,18 @@ export function ActivitySettings() {
 
       <ConsentSheet
         open={consentOpen}
-        onClose={() => setConsentOpen(false)}
+        onClose={() => {
+          afterConsent.current = null;
+          setConsentOpen(false);
+        }}
         userId={userId}
         reconsent={s.needsReconsent}
-        onConsented={() => setConsentOpen(false)}
+        onConsented={() => {
+          setConsentOpen(false);
+          const then = afterConsent.current;
+          afterConsent.current = null;
+          then?.();
+        }}
       />
 
       <ConfirmSheet
@@ -371,6 +377,7 @@ export function ActivitySettings() {
           <>
             <span className="font-semibold text-ink">Al je opgeslagen stappen en actieve kcal worden definitief verwijderd</span>, van
             alle dagen en bronnen. Activiteit bijhouden blijft aan; zet het uit als je ook wilt stoppen met bijhouden.
+            {healthLink.connected && " Health Connect wordt op dit toestel ontkoppeld, zodat de gegevens niet meteen terugkomen."}
           </>
         }
         confirmLabel="Alles verwijderen"
