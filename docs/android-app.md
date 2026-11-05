@@ -6,7 +6,7 @@ November 2026. Stap 2 uit `docs/health-koppeling.md`: een Android-app die de liv
 
 ## 1. Hoe het werkt
 
-- De app is een **Capacitor 8-schil** om de live site. Hij laadt `https://gymapp-eight-kappa.vercel.app` (later `https://myspotter.nl`). Een nieuwe versie van de site staat dus meteen in de app, zonder nieuwe APK.
+- De app is een **Capacitor 8-schil** om de live site. Hij laadt `https://myspotter.nl` (APK's van vóór 5 nov 2026 laden nog `https://gymapp-eight-kappa.vercel.app`). Een nieuwe versie van de site staat dus meteen in de app, zonder nieuwe APK.
 - Alleen een **offline-scherm** zit in de app zelf (`native/www/index.html`). Dat verschijnt als de site niet laadt, met een knop "Opnieuw proberen". Komt de verbinding terug, dan probeert het scherm het vanzelf opnieuw.
 - **Health Connect:** de plugin `@capgo/capacitor-health` leest per dag het totaal van stappen en actieve kcal. Health Connect ontdubbelt die zelf volgens de app-prioriteit van de gebruiker. De app stuurt de dagen in één aanroep naar Supabase (`upsert_daily_activity`, bron `health_connect`). Daarna verschijnen ze op Home, bij Voeding en op de ranglijst.
 - **Wanneer wordt er gesynchroniseerd?**
@@ -112,7 +112,7 @@ Een debug-build kan je inspecteren in Chrome op de pc: open `chrome://inspect` m
 
 ## 5. Server-adres wisselen naar myspotter.nl
 
-Zodra `https://myspotter.nl` live is (ook met https):
+Gedaan op 5 nov 2026 (stappen 1, 2 en 4). Zo ging het, en zo doe je het bij een volgend domein:
 
 1. `capacitor.config.ts`: zet `DEFAULT_SERVER_URL` op het adres dat Vercel **zonder doorverwijzing** serveert (controleer met `curl -I https://myspotter.nl` en `curl -I https://www.myspotter.nl`: het juiste adres geeft 200, niet 307/308). Let op: beide domeinen staan in `allowNavigation`, dus een doorverwijzing blijft wel in de app, maar Capacitor zet zijn brug (`window.Capacitor`) alleen op precies het adres van `server.url`. Na een doorverwijzing naar een ander adres werken Health Connect, de achtergrond-sync en de terugknop dus niet meer.
 2. `android/app/src/main/res/values/strings.xml`: zet `health_connect_privacy_policy_url` op `https://myspotter.nl/privacy`. Dit moet hetzelfde adres zijn als in de Play Store.

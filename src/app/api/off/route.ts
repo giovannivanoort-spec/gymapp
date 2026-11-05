@@ -8,7 +8,7 @@ const ALLOWED = [
   { host: "search.openfoodfacts.org", path: "/search" },
 ];
 
-const USER_AGENT = "Spotter/1.0 (https://gymapp-eight-kappa.vercel.app)";
+const USER_AGENT = "Spotter/1.0 (https://myspotter.nl)";
 const TIMEOUT_MS = 12_000;
 
 /**

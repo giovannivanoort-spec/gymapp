@@ -28,7 +28,7 @@ Open http://localhost:3000. Testen op je telefoon in hetzelfde wifi-netwerk: `np
 
 ## Updates
 
-De app staat op Vercel (https://gymapp-eight-kappa.vercel.app) en is gekoppeld aan GitHub (`giovannivanoort-spec/gymapp`). Elke push naar `main` gaat vanzelf live:
+De app staat op Vercel (https://myspotter.nl, ook bereikbaar via https://gymapp-eight-kappa.vercel.app) en is gekoppeld aan GitHub (`giovannivanoort-spec/gymapp`). Elke push naar `main` gaat vanzelf live:
 
 ```bash
 git add -A

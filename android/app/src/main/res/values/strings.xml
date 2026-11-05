@@ -10,5 +10,5 @@
       Moet dezelfde URL zijn als in de Play Store-vermelding.
       TODO: https://myspotter.nl/privacy zodra het domein live is.
     -->
-    <string name="health_connect_privacy_policy_url" translatable="false">https://gymapp-eight-kappa.vercel.app/privacy</string>
+    <string name="health_connect_privacy_policy_url" translatable="false">https://myspotter.nl/privacy</string>
 </resources>

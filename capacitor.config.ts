@@ -7,12 +7,11 @@ import type { CapacitorConfig } from "@capacitor/cli";
  * De app laadt de site van `server.url`. Overschrijven kan met de omgevingsvariabele CAP_SERVER_URL
  * (bijv. een preview-deploy), daarna `npm run cap:sync`.
  *
- * TODO: zodra https://myspotter.nl live is, DEFAULT_SERVER_URL daarop zetten (en de privacy-URL in
- * android/app/src/main/res/values/strings.xml), opnieuw `npm run cap:sync` en een nieuwe build maken.
- * Gebruik precies het adres dat Vercel ZONDER doorverwijzing serveert (`curl -I` geeft 200, geen 307/308),
- * dus kies tussen myspotter.nl en www.myspotter.nl het canonieke adres. Zie docs/android-app.md, deel 5.
+ * Sinds 5 nov 2026 https://myspotter.nl (Vercel serveert het zonder doorverwijzing: `curl -I` geeft 200).
+ * De privacy-URL in android/app/src/main/res/values/strings.xml wijst ook daarheen. Wil je ooit naar een
+ * ander adres: gebruik precies het adres dat ZONDER doorverwijzing wordt geserveerd. Zie docs/android-app.md, deel 5.
  */
-export const DEFAULT_SERVER_URL = "https://gymapp-eight-kappa.vercel.app";
+export const DEFAULT_SERVER_URL = "https://myspotter.nl";
 
 const serverUrl = process.env.CAP_SERVER_URL || DEFAULT_SERVER_URL;
 
