@@ -2,6 +2,7 @@
 
 import { ChevronRightIcon, TrophyIcon } from "@/components/Icons";
 import { relativeDay } from "@/lib/dates";
+import { isTimed } from "@/lib/exercises";
 import { formatSet, nl } from "@/lib/history";
 import { exerciseName, type RecentPR } from "@/lib/progress/records";
 
@@ -37,10 +38,10 @@ export function RecentPRs({ prs, onOpen }: { prs: RecentPR[]; onOpen: (slug: str
                 </span>
                 <span className="shrink-0 text-right tabular-nums">
                   <span className="block text-sm font-bold">
-                    {nl(pr.value)} {pr.weighted ? "kg" : "reps"}
+                    {nl(pr.value)} {pr.weighted ? "kg" : isTimed(pr.slug) ? "s" : "reps"}
                   </span>
                   <span className="block text-xs font-semibold text-accent">
-                    +{nl(gain)} {pr.weighted ? "kg" : gain === 1 ? "rep" : "reps"}
+                    +{nl(gain)} {pr.weighted ? "kg" : isTimed(pr.slug) ? "s" : gain === 1 ? "rep" : "reps"}
                     {pr.weighted && pct > 0 ? ` (${nl(pct)}%)` : ""}
                   </span>
                 </span>

@@ -2,8 +2,8 @@
 
 import { useMemo, useState } from "react";
 import { useCachedState } from "@/lib/cache";
-import { nl } from "@/lib/history";
-import { estimate1RM } from "@/lib/ranks";
+import { formatSet, nl } from "@/lib/history";
+import { assistedScore, estimate1RM, isAssisted } from "@/lib/ranks";
 import { supabase } from "@/lib/supabase";
 import { TrophyIcon } from "../Icons";
 import { useMyGroupsState } from "./sharing";
@@ -47,23 +47,32 @@ export function GroupBest({ slug, userId }: { slug: string; userId: string }) {
   const entries = useMemo<Entry[] | undefined>(() => {
     if (!best.data || !members.data) return undefined;
     const byUser = new Map<string, Entry>();
+    // Assisted machine: gewicht is ondersteuning, dus geen 1RM ervan en minder hulp telt als beter.
+    const assisted = isAssisted(slug);
+    const score = (e: { weight: number | null; reps: number }) => assistedScore(e.weight, e.reps) ?? 0;
     for (const r of best.data) {
       if (r.exercise_slug !== slug || !(r.user_id in members.data)) continue;
       const weight = Number(r.weight) || null;
       const candidates = [r.reps, r.reps12].filter((x): x is number => x != null && x > 0);
       for (const reps of candidates) {
-        const e1rm = weight ? estimate1RM(weight, reps) : null;
+        const e1rm = weight && !assisted ? estimate1RM(weight, reps) : null;
         const cur = byUser.get(r.user_id);
         const better = !cur
           ? true
-          : e1rm != null || cur.e1rm != null
-            ? (e1rm ?? 0) > (cur.e1rm ?? 0)
-            : (weight ?? 0) > (cur.weight ?? 0) || ((weight ?? 0) === (cur.weight ?? 0) && reps > cur.reps);
+          : assisted
+            ? score({ weight, reps }) > score(cur)
+            : e1rm != null || cur.e1rm != null
+              ? (e1rm ?? 0) > (cur.e1rm ?? 0)
+              : (weight ?? 0) > (cur.weight ?? 0) || ((weight ?? 0) === (cur.weight ?? 0) && reps > cur.reps);
         if (better) byUser.set(r.user_id, { userId: r.user_id, name: members.data[r.user_id], weight, reps, e1rm });
       }
     }
     return [...byUser.values()].sort((a, b) =>
-      a.e1rm != null || b.e1rm != null ? (b.e1rm ?? 0) - (a.e1rm ?? 0) : (b.weight ?? 0) - (a.weight ?? 0) || b.reps - a.reps,
+      assisted
+        ? score(b) - score(a)
+        : a.e1rm != null || b.e1rm != null
+          ? (b.e1rm ?? 0) - (a.e1rm ?? 0)
+          : (b.weight ?? 0) - (a.weight ?? 0) || b.reps - a.reps,
     );
   }, [best.data, members.data, slug]);
 
@@ -149,7 +158,7 @@ export function GroupBest({ slug, userId }: { slug: string; userId: string }) {
                 </span>
                 <span className="shrink-0 text-right">
                   <span className="block text-sm font-semibold tabular-nums">
-                    {e.weight ? `${nl(e.weight)} kg × ${e.reps}` : `${e.reps} reps`}
+                    {assistedLabel(slug, e) ?? formatSet({ weight: e.weight, reps: e.reps, slug })}
                   </span>
                   {e.e1rm != null && <span className="block text-[11px] tabular-nums text-muted">ca. {nl(e.e1rm)} kg 1RM</span>}
                 </span>
@@ -160,9 +169,14 @@ export function GroupBest({ slug, userId }: { slug: string; userId: string }) {
       )}
       {entries && myIndex > 7 && (
         <p className="text-xs text-muted">
-          Jij: {myIndex + 1}e met {entries[myIndex].weight ? `${nl(entries[myIndex].weight!)} kg × ${entries[myIndex].reps}` : `${entries[myIndex].reps} reps`}.
+          Jij: {myIndex + 1}e met {assistedLabel(slug, entries[myIndex]) ?? formatSet({ weight: entries[myIndex].weight, reps: entries[myIndex].reps, slug })}.
         </p>
       )}
     </section>
   );
+}
+
+/** "20 kg ondersteuning × 8" op een assisted machine, anders null. */
+function assistedLabel(slug: string, e: { weight: number | null; reps: number }): string | null {
+  return isAssisted(slug) && e.weight ? `${nl(e.weight)} kg ondersteuning × ${e.reps}` : null;
 }

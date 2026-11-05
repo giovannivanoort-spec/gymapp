@@ -1,6 +1,7 @@
 "use client";
 
 import { getCached, invalidate, setCached } from "./cache";
+import { defaultTargetReps } from "./exercises";
 import { supabase } from "./supabase";
 import type { PlannedExercise, Template } from "./types";
 
@@ -33,7 +34,7 @@ export function cleanPlan(items: PlannedExercise[]): PlannedExercise[] {
   return items.map(({ slug, sets, reps, notes }) => ({
     slug,
     sets: Math.max(1, Math.min(20, Math.round(sets) || 1)),
-    reps: reps.trim() || "8-12",
+    reps: reps.trim() || defaultTargetReps(slug),
     notes: notes?.trim() || undefined,
   }));
 }

@@ -4,6 +4,7 @@ import { Suspense } from "react";
 import { AuthProvider } from "@/components/AuthProvider";
 import { APP_ROOT_ID } from "@/components/shell/appRoot";
 import { Splash } from "@/components/shell/Splash";
+import { WheelScroll } from "@/components/shell/WheelScroll";
 import { APP_BG, APP_DESCRIPTION, APP_NAME } from "@/lib/brand";
 import "./globals.css";
 
@@ -65,6 +66,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         <div id={APP_ROOT_ID} className="contents">
           <Suspense fallback={<Splash />}>
             <AuthProvider>{children}</AuthProvider>
+            <WheelScroll />
           </Suspense>
         </div>
       </body>

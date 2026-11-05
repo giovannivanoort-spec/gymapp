@@ -5,7 +5,7 @@ import { useCallback, useMemo, useState } from "react";
 import { fetchCached, useCached } from "@/lib/cache";
 import { ageFrom, toISODate } from "@/lib/dates";
 import { EXERCISE_BY_SLUG } from "@/lib/exercises";
-import { aggregateRanks, TIERS, type ExerciseRank, type LogLike } from "@/lib/ranks";
+import { aggregateRanks, formatRankBest, TIERS, type ExerciseRank, type LogLike } from "@/lib/ranks";
 import { supabase } from "@/lib/supabase";
 import type { GroupMember } from "@/lib/types";
 import { fetchLogsBySlug, rankAll } from "@/lib/useRanks";
@@ -186,7 +186,7 @@ export function GroupLeaderboard({
                   >
                     {r.recent > 0 ? pos[i] : "–"}
                   </span>
-                  <Avatar id={r.member.user_id} name={name} size={34} />
+                  <Avatar id={r.member.user_id} name={name} src={r.member.profiles?.avatar_url} size={34} />
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-semibold">
                       {name}
@@ -287,8 +287,8 @@ export function GroupLeaderboard({
                       : tierIndex == null
                         ? "Nog geen rang"
                         : r.rank
-                          ? r.rank.unit === "reps"
-                            ? `${r.rank.value} reps`
+                          ? r.rank.unit !== "kg" || r.rank.viaLoad || r.rank.assisted
+                            ? formatRankBest(r.rank)
                             : r.rank.viaAdded
                               ? `+${r.rank.value.toLocaleString("nl-NL")} kg extra`
                               : `1RM ≈ ${r.rank.value.toLocaleString("nl-NL")} kg${bw ? ` · ${(r.rank.value / bw).toFixed(2).replace(".", ",")}× lichaamsgewicht` : ""}`

@@ -105,7 +105,7 @@ export function FriendRow({
       style={{ "--i": index } as React.CSSProperties}
     >
       <span className="relative shrink-0">
-        <Avatar id={friend.id} name={friend.display_name} size={44} ring={s?.overall?.tier.from} />
+        <Avatar id={friend.id} name={friend.display_name} src={friend.avatar_url} size={44} ring={s?.overall?.tier.from} />
         {today && (
           <span className="animate-scale-in absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 rounded-full bg-accent ring-[3px] ring-surface" aria-hidden />
         )}

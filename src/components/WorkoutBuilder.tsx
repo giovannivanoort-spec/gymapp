@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { analyzePlan } from "@/lib/analysis";
 import { formatDate } from "@/lib/dates";
-import { EXERCISE_BY_SLUG } from "@/lib/exercises";
+import { defaultTargetReps, EXERCISE_BY_SLUG } from "@/lib/exercises";
 import type { Exercise } from "@/lib/exercise-types";
 import { formatSet } from "@/lib/history";
 import { errorMessage, supabase } from "@/lib/supabase";
@@ -48,6 +48,8 @@ export function toBuilderItem(p: PlannedExercise, id?: string): BuilderItem {
 }
 
 const REPS_PRESETS = ["5", "6-8", "8-10", "8-12", "10-12", "12-15", "15-20", "AMRAP"];
+/** Snelkeuzes in seconden voor statische oefeningen (plank, wall sit). */
+const SECONDS_PRESETS = ["20", "30", "45", "60", "90", "30-60"];
 const DRAFT_PREFIX = "gymapp-draft:v1:";
 const DRAFT_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
 /** Ruimte tussen de kaarten (space-y-3), nodig om te bepalen wanneer een gesleepte kaart verspringt. */
@@ -370,7 +372,7 @@ export function WorkoutBuilder({
 
   /** `quiet`: geen melding (in de kiezer laten het teller-rondje en de knop "Klaar" het al zien). */
   function add(e: Exercise, quiet = false) {
-    const item = toBuilderItem({ slug: e.slug, sets: 3, reps: "8-12" });
+    const item = toBuilderItem({ slug: e.slug, sets: 3, reps: defaultTargetReps(e.slug) });
     setItems((prev) => [...prev, item]);
     markFresh([item.key]);
     if (!quiet) notify(`${e.name} toegevoegd`);
@@ -488,7 +490,7 @@ export function WorkoutBuilder({
       title: title.trim(),
       date,
       notes: notes.trim(),
-      items: items.map((it) => ({ ...it, reps: it.reps.trim() || "8-12", notes: it.notes?.trim() || undefined })),
+      items: items.map((it) => ({ ...it, reps: it.reps.trim() || defaultTargetReps(it.slug), notes: it.notes?.trim() || undefined })),
     });
   }
 
@@ -852,19 +854,19 @@ export function WorkoutBuilder({
                         onChange={(e) => update(it.key, { reps: e.target.value })}
                         onFocus={() => setRepsKey(it.key)}
                         onBlur={(e) => {
-                          if (!e.target.value.trim()) update(it.key, { reps: "8-12" });
+                          if (!e.target.value.trim()) update(it.key, { reps: defaultTargetReps(it.slug) });
                           const key = it.key;
                           // Even wachten: een tik op een snelkeuze moet nog aankomen.
                           setTimeout(() => setRepsKey((k) => (k === key ? null : k)), 150);
                         }}
                         aria-controls={repsKey === it.key ? `reps-presets-${it.key}` : undefined}
-                        placeholder="8-12"
+                        placeholder={defaultTargetReps(it.slug)}
                         maxLength={20}
                         enterKeyHint="done"
-                        aria-label={`Reps voor ${name}`}
+                        aria-label={`${ex?.timed ? "Seconden" : "Reps"} voor ${name}`}
                       />
                       <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-muted" aria-hidden>
-                        reps
+                        {ex?.timed ? "sec" : "reps"}
                       </span>
                     </div>
                     <button
@@ -891,10 +893,10 @@ export function WorkoutBuilder({
                     <div
                       id={`reps-presets-${it.key}`}
                       role="group"
-                      aria-label={`Snelkeuze reps voor ${name}`}
+                      aria-label={`Snelkeuze ${ex?.timed ? "seconden" : "reps"} voor ${name}`}
                       className="animate-fade-in -mx-1 -mt-1.5 flex gap-1 overflow-x-auto px-1"
                     >
-                      {REPS_PRESETS.map((r) => (
+                      {(ex?.timed ? SECONDS_PRESETS : REPS_PRESETS).map((r) => (
                         <button
                           key={r}
                           type="button"
@@ -946,7 +948,7 @@ export function WorkoutBuilder({
           href={`/coach?q=${encodeURIComponent(
             [
               `Geef feedback op dit ${mode === "workout" ? "trainingsplan" : "schema"}${title.trim() ? ` ("${title.trim()}")` : ""}:`,
-              ...items.map((it) => `- ${exName(it.slug)}: ${it.sets}×${it.reps || "8-12"}${it.notes?.trim() ? ` (${it.notes.trim()})` : ""}`),
+              ...items.map((it) => `- ${exName(it.slug)}: ${it.sets}×${it.reps || defaultTargetReps(it.slug)}${EXERCISE_BY_SLUG[it.slug]?.timed ? " s" : ""}${it.notes?.trim() ? ` (${it.notes.trim()})` : ""}`),
               "Wat zou je aanpassen?",
             ].join("\n"),
           )}`}

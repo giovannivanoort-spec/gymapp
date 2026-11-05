@@ -23,7 +23,12 @@ export type Suggestion = {
 export type SuggestOptions = {
   /** Trainingen vóór de vorige (nieuwste eerst), voor het herkennen van een plateau. */
   earlier?: PrevSet[][];
+  /** Statische oefening (plank, wall sit): reps zijn seconden, opbouwen gaat per 5 s. */
+  timed?: boolean;
 };
+
+/** Stap per set bij oefeningen in seconden. */
+const TIMED_STEP = 5;
 
 export function parseRepRange(target: string): { min: number; max: number } | null {
   const m = target.match(/(\d+)\s*(?:[-–—]|tot)\s*(\d+)/);
@@ -76,6 +81,30 @@ export function suggestNext(
   const rangeLabel = range.min === range.max ? `${range.min}` : `${range.min}–${range.max}`;
   const count = Math.max(targetSets, 1);
   const weighted = sets.some((s) => (s.weight ?? 0) > 0);
+  const timed = !!opts.timed;
+  /** Eenheid achter een aantal: "reps" of "s". */
+  const unit = timed ? "s" : "reps";
+
+  if (!weighted && timed) {
+    const best = Math.max(...sets.map((s) => s.reps ?? 0));
+    if (sets.every((s) => (s.reps ?? 0) >= range.max)) {
+      return {
+        headline: `${best + TIMED_STEP} s per set`,
+        reason: `Vorige keer bij alle sets ${range.max}+ s: houd het ${TIMED_STEP} s langer vol of voeg gewicht toe.`,
+        kind: "reps",
+        perSet: Array.from({ length: count }, () => ({ weight: null, reps: best + TIMED_STEP })),
+      };
+    }
+    return {
+      headline: `${rangeLabel} s, +${TIMED_STEP} s per set`,
+      reason: `Probeer per set ${TIMED_STEP} seconden langer dan vorige keer.`,
+      kind: "reps",
+      perSet: Array.from({ length: count }, (_, i) => ({
+        weight: null,
+        reps: Math.min(range.max, (sets[Math.min(i, sets.length - 1)].reps ?? 0) + TIMED_STEP),
+      })),
+    };
+  }
 
   if (!weighted) {
     const best = Math.max(...sets.map((s) => s.reps ?? 0));
@@ -107,8 +136,8 @@ export function suggestNext(
   if (work.length >= Math.min(count, sets.length) && work.every((s) => (s.reps ?? 0) >= range.max)) {
     const next = top + step;
     return {
-      headline: `${nl(next)} kg × ${rangeLabel}`,
-      reason: `Vorige keer alle sets ${range.max}+ reps op ${nl(top)} kg: tijd voor ${nl(step)} kg erbij.`,
+      headline: `${nl(next)} kg × ${rangeLabel}${timed ? " s" : ""}`,
+      reason: `Vorige keer alle sets ${range.max}+ ${unit} op ${nl(top)} kg: tijd voor ${nl(step)} kg erbij.`,
       kind: "increase",
       perSet: Array.from({ length: count }, () => ({ weight: next, reps: range.min })),
     };
@@ -117,8 +146,8 @@ export function suggestNext(
   if (avgReps < range.min - 2 && top - step > 0) {
     const lower = top - step;
     return {
-      headline: `${nl(lower)} kg × ${rangeLabel}`,
-      reason: `Vorige keer gemiddeld ${nl(Math.round(avgReps * 10) / 10)} reps op ${nl(top)} kg, onder je bereik: iets lichter om in ${rangeLabel} te blijven.`,
+      headline: `${nl(lower)} kg × ${rangeLabel}${timed ? " s" : ""}`,
+      reason: `Vorige keer gemiddeld ${nl(Math.round(avgReps * 10) / 10)} ${unit} op ${nl(top)} kg, onder je bereik: iets lichter om in ${rangeLabel} te blijven.`,
       kind: "decrease",
       perSet: Array.from({ length: count }, () => ({ weight: lower, reps: range.min })),
     };
@@ -128,8 +157,10 @@ export function suggestNext(
     const deload = Math.floor((top * 0.9) / step) * step;
     if (deload > 0 && deload < top) {
       return {
-        headline: `${nl(deload)} kg × ${range.max}`,
-        reason: `Drie trainingen op rij ${nl(top)} kg zonder meer reps: een keer zo'n 10% lichter met ${range.max} reps, daarna weer opbouwen.`,
+        headline: `${nl(deload)} kg × ${range.max}${timed ? " s" : ""}`,
+        reason: timed
+          ? `Drie trainingen op rij ${nl(top)} kg zonder langer vol te houden: een keer zo'n 10% lichter met ${range.max} s, daarna weer opbouwen.`
+          : `Drie trainingen op rij ${nl(top)} kg zonder meer reps: een keer zo'n 10% lichter met ${range.max} reps, daarna weer opbouwen.`,
         perSet: Array.from({ length: count }, () => ({ weight: deload, reps: range.max })),
         kind: "deload",
       };
@@ -137,12 +168,14 @@ export function suggestNext(
   }
 
   return {
-    headline: `${nl(top)} kg × ${rangeLabel}`,
-    reason: "Zelfde gewicht als vorige keer, probeer per set één rep meer.",
+    headline: `${nl(top)} kg × ${rangeLabel}${timed ? " s" : ""}`,
+    reason: timed
+      ? `Zelfde gewicht als vorige keer, probeer per set ${TIMED_STEP} s langer.`
+      : "Zelfde gewicht als vorige keer, probeer per set één rep meer.",
     kind: "hold",
     perSet: Array.from({ length: count }, (_, i) => {
       const p = work[Math.min(i, work.length - 1)];
-      return { weight: top, reps: Math.min(range.max, (p.reps ?? range.min) + 1) };
+      return { weight: top, reps: Math.min(range.max, (p.reps ?? range.min) + (timed ? TIMED_STEP : 1)) };
     }),
   };
 }

@@ -114,7 +114,7 @@ export function ExerciseCard({
               {complete && <span className="sr-only"> (alle sets gedaan)</span>}
             </h2>
             <p className="text-sm text-muted">
-              {we.target_sets} × {we.target_reps} reps
+              {we.target_sets} × {we.target_reps} {ex?.timed ? "sec" : "reps"}
             </p>
           </div>
           {ex && <MuscleChips primary={ex.primary} secondary={ex.secondary} limit={5} />}
@@ -202,7 +202,7 @@ export function ExerciseCard({
                 {logs
                   .filter((l) => l.user_id === uid)
                   .sort((a, b) => a.set_number - b.set_number)
-                  .map(fmtSet)
+                  .map((l) => fmtSet(l, we.exercise_slug))
                   .join(" · ")}
               </span>
             </p>

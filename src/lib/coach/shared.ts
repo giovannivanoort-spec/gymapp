@@ -19,6 +19,8 @@ export const TOOL_LABELS: Record<string, string> = {
   get_group_check: "Groep checken",
   list_templates: "Schema's bekijken",
   save_template: "Schema opslaan",
+  update_template: "Schema aanpassen",
+  delete_template: "Schema verwijderen",
   propose_group_workout: "Voorstel maken",
   plan_group_workout: "Training klaarzetten",
   get_strength_ranks: "Ranks bekijken",
@@ -49,10 +51,22 @@ export async function fetchMyProfile(sb: SupabaseClient, userId: string): Promis
 export const STOP_MARK = "_(gestopt)_";
 
 /** Tools die iets opslaan (na afloop moeten caches elders in de app ververst worden). */
-export const WRITE_TOOLS = new Set(["save_template", "plan_group_workout"]);
+export const WRITE_TOOLS = new Set(["save_template", "update_template", "delete_template", "plan_group_workout"]);
 
-/** Kaartje in de chat na een opgeslagen schema of een klaargezette training. */
-export type Artifact = { kind: "template" | "workout"; link: string; title: string; detail: string };
+/**
+ * Kaartje in de chat na een opgeslagen of aangepast schema, een klaargezette training, of een regel
+ * na een verwijderd schema (`deleted`, zonder link naar het schema zelf).
+ * `label` vervangt de standaardkop ("Schema opgeslagen"); `id` is het schema, zodat de chat de cache
+ * van precies dat schema kan weggooien.
+ */
+export type Artifact = {
+  kind: "template" | "workout" | "deleted";
+  link: string;
+  title: string;
+  detail: string;
+  label?: string;
+  id?: string;
+};
 
 export type ProposalExercise = { slug: string; name: string; sets: number; reps: string; notes?: string };
 /** Voorstel voor een groepstraining dat de trainer zelf bevestigt via de kaart in de chat. */
@@ -81,9 +95,33 @@ export function formatShortDate(iso: string) {
 export function artifactFrom(name: string, data: unknown): Artifact | null {
   if (!data || typeof data !== "object") return null;
   const d = data as Record<string, unknown>;
+  if (name === "delete_template") {
+    // Een tweede (idempotente) aanroep na een al verwijderd schema geeft geen tweede regel.
+    if (d.deleted !== true || d.already_deleted) return null;
+    return {
+      kind: "deleted",
+      link: "/templates",
+      title: String(d.name ?? "Schema"),
+      detail: "",
+      label: "Schema verwijderd",
+      ...(typeof d.template_id === "string" && { id: d.template_id }),
+    };
+  }
   if (typeof d.link !== "string") return null;
   const count = typeof d.exercise_count === "number" ? `${d.exercise_count} oefeningen` : "";
   if (name === "save_template") return { kind: "template", link: d.link, title: String(d.name ?? "Schema"), detail: count };
+  if (name === "update_template") {
+    // Niets veranderd (het schema was al zo): geen kaart "Schema bijgewerkt".
+    if (Array.isArray(d.changes) && d.changes.length === 0) return null;
+    return {
+      kind: "template",
+      link: d.link,
+      title: String(d.name ?? "Schema"),
+      detail: count,
+      label: "Schema bijgewerkt",
+      ...(typeof d.template_id === "string" && { id: d.template_id }),
+    };
+  }
   if (name === "plan_group_workout") {
     const when = typeof d.date === "string" ? formatShortDate(d.date) : "";
     return {
@@ -94,6 +132,11 @@ export function artifactFrom(name: string, data: unknown): Artifact | null {
     };
   }
   return null;
+}
+
+/** Vroeg delete_template om bevestiging (er is nog niets verwijderd)? Dan wacht de coach op ja of nee. */
+export function asksDeleteConfirmation(name: string, data: unknown): boolean {
+  return name === "delete_template" && !!data && typeof data === "object" && (data as { needs_confirmation?: unknown }).needs_confirmation === true;
 }
 
 /** Voorstel uit het resultaat van propose_group_workout (of null). */
@@ -195,7 +238,16 @@ export async function planGroupWorkout(sb: SupabaseClient, input: PlanInput): Pr
  */
 export function followupsFor(
   tools: string[],
-  opts: { hasTemplate: boolean; hasWorkout: boolean; hasProposal: boolean; trainerGroup?: string },
+  opts: {
+    hasTemplate: boolean;
+    hasWorkout: boolean;
+    hasProposal: boolean;
+    trainerGroup?: string;
+    /** In deze beurt is een schema echt verwijderd. */
+    hasDeleted?: boolean;
+    /** In deze beurt vroeg de coach om bevestiging voor het verwijderen van een schema. */
+    pendingDelete?: boolean;
+  },
 ): string[] {
   const used = new Set(tools);
   const out: string[] = [];
@@ -203,6 +255,11 @@ export function followupsFor(
     if (!out.includes(s) && out.length < 3) out.push(s);
   };
   const g = opts.trainerGroup;
+  // De coach vroeg om bevestiging voor het verwijderen van een schema: alleen ja of nee aanbieden.
+  if (opts.pendingDelete) {
+    return ["Ja, verwijder het schema", "Nee, laat het staan"];
+  }
+  if (opts.hasDeleted) add("Laat mijn schema's zien");
   if (opts.hasProposal) {
     add("Maak het voorstel wat zwaarder");
     add("Vervang een oefening door een variant met dumbbells");
@@ -210,6 +267,7 @@ export function followupsFor(
   }
   if (opts.hasWorkout) add("Geef een korte warming-up voor deze training");
   if (opts.hasTemplate) {
+    if (used.has("update_template")) add("Check de spierverdeling van het aangepaste schema");
     if (g) add(`Stel deze training voor als groepstraining voor ${g}`);
     add("Hoe bouw ik dit schema de komende weken op?");
   }
@@ -220,5 +278,6 @@ export function followupsFor(
   if (used.has("get_nutrition")) add("Geef een voorbeelddag die mijn eiwitdoel haalt");
   if (used.has("get_training_log")) add("Welke spiergroepen train ik te weinig?");
   if (used.has("analyze_plan") && !opts.hasTemplate && !opts.hasProposal) add("Sla dit op als schema");
+  if (used.has("list_templates") && !opts.hasTemplate && !opts.hasDeleted) add("Verbeter een van mijn schema's");
   return out;
 }

@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { signOut, useAuth } from "@/components/AuthProvider";
-import { Avatar } from "@/components/Avatar";
 import { usePersonSummary } from "@/components/FriendCard";
 import { CheckIcon, ChevronRightIcon, DownloadIcon, UsersIcon } from "@/components/Icons";
 import { NutritionSettings } from "@/components/nutrition/NutritionSettings";
@@ -16,12 +15,14 @@ import { RankBadge } from "@/components/RankBadge";
 import { NewPasswordForm } from "@/components/shell/NewPasswordForm";
 import { Sheet } from "@/components/Sheet";
 import { deleteMyAccount, downloadMyData } from "@/components/social/account";
+import { AvatarPicker } from "@/components/social/AvatarPicker";
 import { ConfirmSheet } from "@/components/social/ConfirmSheet";
 import { DeleteAccountSheet } from "@/components/social/DeleteAccountSheet";
 import { FriendCode, showFlashToast, useFlash } from "@/components/social/FriendCode";
 import { KeyIcon, LogoutIcon, PhoneIcon, ProgressIcon, RetryIcon } from "@/components/social/icons";
 import { Segmented } from "@/components/social/Segmented";
 import { toast } from "@/components/ui/Toast";
+import { deleteAvatarFiles, removeAvatar } from "@/lib/avatars";
 import { ageFrom, toISODate } from "@/lib/dates";
 import {
   friendErrorMessage,
@@ -152,6 +153,13 @@ export default function ProfilePage() {
   }
 
   async function deleteAccount() {
+    // Profielfoto eerst opruimen, nu het account (en de sessie) nog bestaat. Altijd, ook zonder
+    // huidige foto: er kunnen bestanden over zijn van een eerder mislukte opruiming. Eerst de
+    // kolom leeg, zodat een mislukte verwijdering initialen toont in plaats van een dode link.
+    if (userId) {
+      await removeAvatar(userId).catch(() => {});
+      await deleteAvatarFiles(userId);
+    }
     await deleteMyAccount();
     // Account is weg: meldingen op dit toestel uitzetten en lokaal uitloggen (wist ook de cache).
     await removePushSubscription();
@@ -187,13 +195,16 @@ export default function ProfilePage() {
               style={{ background: ranks.overall.tier.from }}
             />
           )}
-          <div className="relative flex items-center gap-4">
-            <Avatar id={userId ?? ""} name={displayName} size={64} ring={ranks?.overall?.tier.from} />
-            <div className="min-w-0 flex-1">
-              <h2 className="truncate text-xl font-extrabold">{displayName}</h2>
-              <p className="truncate text-sm text-muted">{session?.user.email}</p>
-            </div>
-          </div>
+          <AvatarPicker
+            userId={userId ?? ""}
+            name={displayName}
+            src={profile?.avatar_url}
+            ring={ranks?.overall?.tier.from}
+            onChanged={refreshProfile}
+          >
+            <h2 className="truncate text-xl font-extrabold">{displayName}</h2>
+            <p className="truncate text-sm text-muted">{session?.user.email}</p>
+          </AvatarPicker>
           <div className="relative">
             <FriendCode code={friendCode} onMessage={showFlashToast} />
             <div className="mt-1.5 flex items-center justify-between gap-3">

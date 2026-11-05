@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { ChevronRightIcon } from "@/components/Icons";
 import { formatDate } from "@/lib/dates";
+import { isTimed } from "@/lib/exercises";
 import { formatSet, nl, type Session } from "@/lib/history";
 import { exerciseName, isWeighted, sessionValue } from "@/lib/progress/records";
 
@@ -69,7 +70,7 @@ export function Records({
                 </span>
                 <span className="shrink-0 text-right tabular-nums">
                   <span className="block text-sm font-bold">
-                    {r.weighted ? `${nl(r.best.best1RM ?? 0)} kg` : `${r.best.maxReps} reps`}
+                    {r.weighted ? `${nl(r.best.best1RM ?? 0)} kg` : `${r.best.maxReps} ${isTimed(r.slug) ? "s" : "reps"}`}
                   </span>
                   <span className="block text-xs text-muted">{formatSet(r.best.bestSet)}</span>
                 </span>

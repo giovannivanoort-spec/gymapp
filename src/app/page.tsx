@@ -211,7 +211,7 @@ export default function HomePage() {
                 <SparkleIcon size={18} />
               </span>
             </Link>
-            <ProfileButton id={userId} name={profile?.display_name ?? ""} />
+            <ProfileButton id={userId} name={profile?.display_name ?? ""} src={profile?.avatar_url} />
           </div>
         </header>
 
@@ -221,7 +221,7 @@ export default function HomePage() {
 
         {incoming.length > 0 && (
           <Link href="/friends" className="card animate-fade-up flex items-center gap-3 border-accent/40 bg-accent/5 p-3">
-            <Avatar id={incoming[0].id} name={incoming[0].display_name} size={32} />
+            <Avatar id={incoming[0].id} name={incoming[0].display_name} src={incoming[0].avatar_url} size={32} />
             <p className="min-w-0 flex-1 text-sm">
               <span className="font-semibold">{incoming[0].display_name}</span>
               {incoming.length > 1

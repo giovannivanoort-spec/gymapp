@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import type { Exercise } from "@/lib/exercise-types";
+import { defaultTargetReps } from "@/lib/exercises";
 import { errorMessage, supabase } from "@/lib/supabase";
 import { cleanPlan, plural, putTemplateInCache } from "@/lib/templates";
 import type { Template } from "@/lib/types";
@@ -41,7 +42,7 @@ export function AddToTemplateSheet({
       return setFailed(fresh.error ? errorMessage(fresh.error) : "Dit schema bestaat niet meer.");
     }
     const current = (fresh.data as Pick<Template, "exercises">).exercises ?? [];
-    const exercises = cleanPlan([...current, { slug: exercise.slug, sets: 3, reps: "8-12" }]);
+    const exercises = cleanPlan([...current, { slug: exercise.slug, sets: 3, reps: defaultTargetReps(exercise.slug) }]);
     const { data, error } = await supabase.from("templates").update({ exercises }).eq("id", t.id).select("*").single();
     setBusyId(null);
     if (error || !data) return setFailed(error ? errorMessage(error) : "Schema niet gevonden.");
@@ -53,7 +54,8 @@ export function AddToTemplateSheet({
     <Sheet open={open} onClose={onClose} title="Toevoegen aan schema">
       <div className="space-y-3">
         <p className="text-sm text-muted">
-          <span className="font-semibold text-ink">{exercise.name}</span> komt achteraan het schema met 3 sets van 8-12 reps.
+          <span className="font-semibold text-ink">{exercise.name}</span> komt achteraan het schema met 3 sets van{" "}
+          {defaultTargetReps(exercise.slug)} {exercise.timed ? "seconden" : "reps"}.
           Dat kun je daarna aanpassen.
         </p>
         <Link href={`/templates/new?add=${encodeURIComponent(exercise.slug)}`} className="btn-ghost min-h-11 w-full">

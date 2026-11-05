@@ -153,7 +153,7 @@ export function AppShell({ title, back, action, children }: Props) {
           {session &&
             !pathname.startsWith("/profile") &&
             (profileName ? (
-              <ProfileButton id={session.user.id} name={profileName} badge={requests} />
+              <ProfileButton id={session.user.id} name={profileName} src={profile?.avatar_url} badge={requests} />
             ) : (
               <span className="-my-1.5 -mr-1.5 flex h-11 w-11 shrink-0 items-center justify-center" aria-hidden>
                 <span className="skeleton h-[34px] w-[34px] rounded-full" />

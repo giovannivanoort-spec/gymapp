@@ -14,7 +14,7 @@ import { groupOf, setTemplateGroup, sharingError, useMyGroupsState } from "@/com
 import { Sheet } from "@/components/Sheet";
 import { clearBuilderDraft, toBuilderItem, WorkoutBuilder, type BuilderValue } from "@/components/WorkoutBuilder";
 import { getCached } from "@/lib/cache";
-import { EXERCISE_BY_SLUG } from "@/lib/exercises";
+import { defaultTargetReps, EXERCISE_BY_SLUG } from "@/lib/exercises";
 import type { MyGroup } from "@/lib/groups";
 import { errorMessage, supabase } from "@/lib/supabase";
 import { cleanPlan, insertTemplate, plural, putTemplateInCache, removeTemplateFromCache, templatesKey } from "@/lib/templates";
@@ -63,7 +63,7 @@ export default function TemplateEditPage() {
       return {
         status: "ready",
         template: null,
-        initial: { title: "", date: "", notes: "", items: ex ? [toBuilderItem({ slug: ex.slug, sets: 3, reps: "8-12" })] : [] },
+        initial: { title: "", date: "", notes: "", items: ex ? [toBuilderItem({ slug: ex.slug, sets: 3, reps: defaultTargetReps(ex.slug) })] : [] },
       };
     }
     return seed ? { status: "ready", initial: toInitial(seed), template: seed } : { status: "loading" };

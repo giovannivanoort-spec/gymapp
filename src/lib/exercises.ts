@@ -1578,9 +1578,25 @@ const BASE_EXERCISES: Exercise[] = [
 
 const MUSCLE_ORDER = new Map(MUSCLES.map((m, i) => [m.id, i]));
 
+/**
+ * Statische oefeningen: het reps-veld van een set is hier het aantal seconden (zie ook de
+ * standaarden in seconden in strength-standards.json).
+ */
+const TIMED = new Set(["plank", "side-plank", "copenhagen-plank", "hollow-body-hold", "l-sit", "dead-hang", "wall-sit"]);
+
 /** Alle oefeningen, gesorteerd op hoofdspier (borst, schouders, armen, rug, core, benen). */
-export const EXERCISES: Exercise[] = [...BASE_EXERCISES, ...UPPER_EXERCISES, ...LOWER_EXERCISES].sort(
-  (a, b) => (MUSCLE_ORDER.get(a.primary[0]) ?? 99) - (MUSCLE_ORDER.get(b.primary[0]) ?? 99),
-);
+export const EXERCISES: Exercise[] = [...BASE_EXERCISES, ...UPPER_EXERCISES, ...LOWER_EXERCISES]
+  .map((e): Exercise => (TIMED.has(e.slug) ? { ...e, timed: true } : e))
+  .sort((a, b) => (MUSCLE_ORDER.get(a.primary[0]) ?? 99) - (MUSCLE_ORDER.get(b.primary[0]) ?? 99));
 
 export const EXERCISE_BY_SLUG: Record<string, Exercise> = Object.fromEntries(EXERCISES.map((e) => [e.slug, e]));
+
+/** Wordt deze oefening in seconden gelogd (plank, wall sit)? */
+export function isTimed(slug: string | null | undefined): boolean {
+  return !!slug && !!EXERCISE_BY_SLUG[slug]?.timed;
+}
+
+/** Standaarddoel als er niets is ingevuld: seconden bij statische houdingen, anders reps. */
+export function defaultTargetReps(slug: string | null | undefined): string {
+  return isTimed(slug) ? "30-60" : "8-12";
+}

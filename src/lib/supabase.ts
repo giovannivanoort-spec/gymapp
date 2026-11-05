@@ -1,5 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { BASE_PROFILE_COLUMNS, PUBLIC_PROFILE_COLUMNS, type OwnProfile, type Profile, type PublicProfile } from "./types";
+import { BASE_PROFILE_COLUMNS, PUBLIC_PROFILE_COLUMNS, PUBLIC_PROFILE_COLUMNS_NO_PHOTO, type OwnProfile, type Profile, type PublicProfile } from "./types";
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -178,10 +178,14 @@ export async function fetchPublicProfile(id: string): Promise<PublicProfile | nu
   const full = await supabase.from("profiles").select(PUBLIC_PROFILE_COLUMNS).eq("id", id).maybeSingle();
   if (!full.error) return (full.data as PublicProfile | null) ?? null;
   if (!isMissingSchemaError(full.error)) throw full.error;
+  // upgrade-avatars.sql nog niet gedraaid: alles behalve de profielfoto.
+  const rest = await supabase.from("profiles").select(PUBLIC_PROFILE_COLUMNS_NO_PHOTO).eq("id", id).maybeSingle();
+  if (!rest.error) return rest.data ? { ...(rest.data as unknown as PublicProfile), avatar_url: null } : null;
+  if (!isMissingSchemaError(rest.error)) throw rest.error;
   const base = await supabase.from("profiles").select(BASE_PROFILE_COLUMNS).eq("id", id).maybeSingle();
   if (base.error) throw base.error;
   if (!base.data) return null;
-  return { bodyweight_kg: null, sex: null, height_cm: null, birth_date: null, weekly_goal: null, ...(base.data as Pick<Profile, "id" | "display_name">) };
+  return { bodyweight_kg: null, sex: null, height_cm: null, birth_date: null, weekly_goal: null, avatar_url: null, ...(base.data as Pick<Profile, "id" | "display_name">) };
 }
 
 /**

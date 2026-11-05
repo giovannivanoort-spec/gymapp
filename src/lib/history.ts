@@ -10,7 +10,8 @@ import {
   useCached,
   useCachedState,
 } from "./cache";
-import { estimate1RM } from "./ranks";
+import { isTimed } from "./exercises";
+import { assistedScore, estimate1RM, isAssisted } from "./ranks";
 import { supabase } from "./supabase";
 
 /** Eén gelogde set met de training en oefening waar hij bij hoort. */
@@ -155,9 +156,15 @@ export type Session = {
   workoutId: string;
   workoutTitle: string;
   sets: HistorySet[];
-  /** Beste geschatte 1RM (kg), of null als er geen gewicht/geldige reps zijn. */
+  /**
+   * Beste geschatte 1RM (kg), of null als er geen gewicht/geldige reps zijn. Ook null bij een
+   * assisted machine: daar is het gewicht ondersteuning en zegt een 1RM ervan niets.
+   */
   best1RM: number | null;
-  /** Set met de hoogste geschatte 1RM, anders de set met de meeste reps. */
+  /**
+   * Set met de hoogste geschatte 1RM, anders de set met de meeste reps. Bij een assisted machine
+   * de set met de minste ondersteuning (bij gelijke hulp de meeste reps).
+   */
   bestSet: HistorySet;
   maxReps: number;
   /** Totaal kg × reps. */
@@ -176,7 +183,8 @@ export function sessionsBySlug(history: HistorySet[]): Map<string, Session[]> {
   const bySlug = new Map<string, Session[]>();
   for (const sets of byWe.values()) {
     sets.sort((a, b) => a.setNumber - b.setNumber);
-    const scored = sets.map((s) => ({ s, e: estimate1RM(s.weight ?? 0, s.reps ?? 0) }));
+    const assisted = isAssisted(sets[0].slug);
+    const scored = sets.map((s) => ({ s, e: assisted ? assistedScore(s.weight, s.reps) : estimate1RM(s.weight ?? 0, s.reps ?? 0) }));
     const withE = scored.filter((x) => x.e != null);
     const best = withE.length ? withE.reduce((a, b) => (b.e! > a.e! ? b : a)) : null;
     const session: Session = {
@@ -184,7 +192,7 @@ export function sessionsBySlug(history: HistorySet[]): Map<string, Session[]> {
       workoutId: sets[0].workoutId,
       workoutTitle: sets[0].workoutTitle,
       sets,
-      best1RM: best ? Math.round(best.e! * 10) / 10 : null,
+      best1RM: best && !assisted ? Math.round(best.e! * 10) / 10 : null,
       bestSet: best?.s ?? sets.reduce((a, b) => ((b.reps ?? 0) > (a.reps ?? 0) ? b : a)),
       maxReps: Math.max(...sets.map((s) => s.reps ?? 0)),
       volume: sets.reduce((v, s) => v + (s.weight ?? 0) * (s.reps ?? 0), 0),
@@ -198,8 +206,10 @@ export function sessionsBySlug(history: HistorySet[]): Map<string, Session[]> {
   return bySlug;
 }
 
-export function formatSet(s: { weight: number | null; reps: number | null }): string {
+/** "80 kg × 5", "12 reps", of bij statische oefeningen (slug meegegeven) "45 s" / "10 kg × 45 s". */
+export function formatSet(s: { weight: number | null; reps: number | null; slug?: string }): string {
   const w = s.weight ? `${s.weight.toLocaleString("nl-NL")} kg × ` : "";
+  if (isTimed(s.slug)) return `${w}${s.reps ?? "–"} s`;
   return `${w}${s.reps ?? "–"}${s.weight ? "" : " reps"}`;
 }
 

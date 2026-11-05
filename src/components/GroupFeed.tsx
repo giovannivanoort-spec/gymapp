@@ -7,7 +7,7 @@ import { timeAgo } from "@/lib/dates";
 import { EXERCISE_BY_SLUG } from "@/lib/exercises";
 import { TIERS } from "@/lib/ranks";
 import type { ActivityPayload, ActivityType } from "@/lib/activities";
-import { supabase } from "@/lib/supabase";
+import { isMissingSchemaError, supabase } from "@/lib/supabase";
 import { Avatar } from "./Avatar";
 import { FEED_PAGE, joinNames, plural } from "./groups/groupData";
 import { toast } from "./ui/Toast";
@@ -24,7 +24,7 @@ type Activity = {
   payload: ActivityPayload;
   workout_id: string | null;
   created_at: string;
-  profiles: { display_name: string } | null;
+  profiles: { display_name: string; avatar_url?: string | null } | null;
   activity_kudos: Kudo[];
 };
 
@@ -33,14 +33,18 @@ type FeedPage = { items: Activity[]; hasMore: boolean };
 const PAGE = FEED_PAGE;
 
 async function fetchFeed(groupId: string, limit: number): Promise<FeedPage> {
-  const { data, error } = await supabase
-    .from("activities")
-    .select(
-      "id, user_id, type, payload, workout_id, created_at, profiles!activities_user_id_fkey(display_name), activity_kudos(user_id, profiles(display_name))",
-    )
-    .eq("group_id", groupId)
-    .order("created_at", { ascending: false })
-    .limit(limit + 1);
+  const query = (author: string) =>
+    supabase
+      .from("activities")
+      .select(
+        `id, user_id, type, payload, workout_id, created_at, profiles!activities_user_id_fkey(${author}), activity_kudos(user_id, profiles(display_name))`,
+      )
+      .eq("group_id", groupId)
+      .order("created_at", { ascending: false })
+      .limit(limit + 1);
+  let { data, error } = await query("display_name, avatar_url");
+  // Profielfoto's nog niet ingeschakeld (upgrade-avatars.sql): zonder foto.
+  if (error && isMissingSchemaError(error)) ({ data, error } = await query("display_name"));
   if (error) throw error;
   const rows = (data as unknown as Activity[]) ?? [];
   return { items: rows.slice(0, limit), hasMore: rows.length > limit };
@@ -207,7 +211,7 @@ export function GroupFeed({
           return (
             <li key={a.id} className="animate-fade-up flex items-start gap-3 px-4 py-3" style={{ "--i": Math.min(i, 8) } as React.CSSProperties}>
               <Link href={profileHref} className="relative mt-0.5 shrink-0 rounded-full" aria-label={`Profiel van ${realName}`}>
-                <Avatar id={a.user_id} name={realName} size={36} />
+                <Avatar id={a.user_id} name={realName} src={a.profiles?.avatar_url} size={36} />
                 <TypeBadge a={a} />
               </Link>
               <div className="min-w-0 flex-1">

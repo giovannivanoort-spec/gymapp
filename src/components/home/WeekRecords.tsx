@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useMemo } from "react";
 import { ArrowUpIcon } from "@/components/Icons";
+import { isTimed } from "@/lib/exercises";
 import type { HistorySet } from "@/lib/history";
 import { parseISODate, weekRange } from "@/lib/week";
 import { findRecords, kg } from "./data";
@@ -35,14 +36,16 @@ export function WeekRecords({ history, today }: { history: HistorySet[] | undefi
               style={{ "--i": i } as React.CSSProperties}
             >
               <span className="truncate text-xs font-semibold">{r.name}</span>
-              <span className="text-[10px] uppercase tracking-wide text-muted">{r.unit === "kg" ? "Geschatte 1RM" : "Max. reps"}</span>
+              <span className="text-[10px] uppercase tracking-wide text-muted">
+                {r.unit === "kg" ? "Geschatte 1RM" : isTimed(r.slug) ? "Langste set" : "Max. reps"}
+              </span>
               <span className="flex items-baseline justify-between gap-2">
                 <span className="text-lg font-extrabold tabular-nums leading-tight">
-                  {r.unit === "kg" ? kg(r.value) : r.value}
+                  {r.unit === "kg" ? kg(r.value) : isTimed(r.slug) ? `${r.value} s` : r.value}
                 </span>
                 <span className="flex items-center gap-0.5 text-[11px] font-semibold tabular-nums text-accent">
                   <ArrowUpIcon size={11} strokeWidth={2.6} />
-                  {r.unit === "kg" ? kg(r.delta) : r.delta}
+                  {r.unit === "kg" ? kg(r.delta) : isTimed(r.slug) ? `${r.delta} s` : r.delta}
                 </span>
               </span>
             </Link>

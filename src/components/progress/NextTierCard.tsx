@@ -4,20 +4,22 @@ import Link from "next/link";
 import { ChevronRightIcon } from "@/components/Icons";
 import { RankBadge, TierProgress } from "@/components/RankBadge";
 import { exerciseName } from "@/lib/progress/records";
-import { exampleSetFor, TIERS, type ExerciseRank } from "@/lib/ranks";
+import { nextTierTarget, TIERS, type ExerciseRank } from "@/lib/ranks";
 
 const nl = (n: number) => n.toLocaleString("nl-NL", { maximumFractionDigits: 1 });
 
 /** Wat er nog nodig is voor de volgende tier, als concreet doel ("nog 4 kg · bijv. 85 kg × 5"). */
 export function nextTierGoal(r: ExerciseRank): { gap: string; example: string | null } | null {
-  if (r.nextAt == null) return null;
+  const target = nextTierTarget(r);
+  if (r.nextAt == null || !target) return null;
   if (r.unit === "reps") {
     const gap = Math.max(1, Math.ceil(r.nextAt - r.value));
-    return { gap: `nog ${gap} ${gap === 1 ? "rep" : "reps"}`, example: `${r.nextAt} reps in één set` };
+    return { gap: `nog ${gap} ${gap === 1 ? "rep" : "reps"}`, example: target.example };
   }
+  if (r.unit === "seconds") return { gap: `nog ${Math.max(1, Math.ceil(r.nextAt - r.value))} s`, example: target.example };
   const gap = Math.max(0.5, Math.ceil((r.nextAt - r.value) * 2) / 2);
-  if (r.viaAdded) return { gap: `nog ${nl(gap)} kg`, example: `1RM met +${Math.ceil(r.nextAt)} kg extra` };
-  return { gap: `nog ${nl(gap)} kg 1RM`, example: exampleSetFor(r.nextAt).replace(".", ",") };
+  if (r.viaAdded || r.viaLoad) return { gap: `nog ${nl(gap)} kg`, example: target.example };
+  return { gap: `nog ${nl(gap)} kg 1RM`, example: target.example };
 }
 
 /**

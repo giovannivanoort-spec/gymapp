@@ -90,7 +90,7 @@ grant execute on function public.get_my_profile() to authenticated;
 -- Haal de commentaartekens weg en draai dit blok:
 --
 -- revoke select on public.profiles from authenticated, anon;
--- grant select (id, display_name, created_at, bodyweight_kg, sex, height_cm, birth_date, weekly_goal, friend_code)
+-- grant select (id, display_name, created_at, bodyweight_kg, sex, height_cm, birth_date, weekly_goal, friend_code, avatar_url)
 --   on public.profiles to authenticated;
 --
 -- Terugdraaien kan altijd met: grant select on public.profiles to authenticated;

@@ -16,6 +16,8 @@ import {
   useFriendsRealtime,
   useFriendsStatus,
 } from "@/lib/friends";
+import { fetchAvatarUrl } from "@/lib/avatars";
+import { useCached } from "@/lib/cache";
 import { supabase } from "@/lib/supabase";
 
 /** Zo lang wachten we maximaal op de vriendenlijst voordat we de uitnodiging toch tonen. */
@@ -67,6 +69,8 @@ export default function FriendInvitePage() {
   const friendsKnown = waited || friendsStatus.error || (friends !== undefined && friendsStatus.verified);
   const waitingForFriends = !!preview && preview.id !== me && !friendsKnown;
   const first = preview?.display_name.split(" ")[0] ?? "";
+  // Profielfoto apart ophalen (de preview-functie geeft alleen id en naam); mislukt het, dan initialen.
+  const photo = useCached(preview ? `avatar:${preview.id}` : null, () => fetchAvatarUrl(preview!.id).catch(() => null));
 
   async function add() {
     if (!preview) return;
@@ -121,7 +125,7 @@ export default function FriendInvitePage() {
       ) : (
         <div className="card animate-scale-in relative space-y-5 overflow-hidden py-8 text-center">
           <div className="pointer-events-none absolute left-1/2 top-0 h-40 w-40 -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent/15 blur-3xl" />
-          <Avatar id={preview!.id} name={preview!.display_name} size={80} className="relative mx-auto" ring={alreadyFriends ? "var(--color-accent)" : undefined} />
+          <Avatar id={preview!.id} name={preview!.display_name} src={photo} size={80} className="relative mx-auto" ring={alreadyFriends ? "var(--color-accent)" : undefined} />
           <div className="relative">
             <h2 className="text-2xl font-bold">{preview!.display_name}</h2>
             <p className="mt-1 text-sm text-muted">

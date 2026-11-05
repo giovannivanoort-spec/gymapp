@@ -139,7 +139,7 @@ export function WeekRecap({
           {crew.met.length > 0 && (
             <span className="flex shrink-0 -space-x-2">
               {crew.met.slice(0, 4).map((f) => (
-                <Avatar key={f.id} id={f.id} name={f.display_name} size={26} ring="var(--color-accent)" />
+                <Avatar key={f.id} id={f.id} name={f.display_name} src={f.avatar_url} size={26} ring="var(--color-accent)" />
               ))}
             </span>
           )}

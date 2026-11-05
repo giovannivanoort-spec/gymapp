@@ -7,7 +7,7 @@ import { useFriends } from "@/lib/friends";
 import type { HistorySet } from "@/lib/history";
 import { useSafeCached } from "@/lib/progress/safeCache";
 import type { ExerciseRank, LogLike } from "@/lib/ranks";
-import { supabase } from "@/lib/supabase";
+import { isMissingSchemaError, supabase } from "@/lib/supabase";
 import { fetchLogsBySlug, rankAll } from "@/lib/useRanks";
 
 /** Vriend of groepsgenoot, met wat nodig is om een rang uit te rekenen. */
@@ -17,13 +17,14 @@ export type ComparePerson = {
   bodyweight_kg?: number | null;
   sex?: "male" | "female" | null;
   birth_date?: string | null;
+  avatar_url?: string | null;
 };
 
 async function fetchGroupmates(me: string): Promise<ComparePerson[]> {
-  const { data, error } = await supabase
-    .from("group_members")
-    .select("user_id, profiles(id, display_name, bodyweight_kg, sex, birth_date)")
-    .neq("user_id", me);
+  const query = (cols: string) => supabase.from("group_members").select(`user_id, profiles(${cols})`).neq("user_id", me);
+  let { data, error } = await query("id, display_name, bodyweight_kg, sex, birth_date, avatar_url");
+  // Profielfoto's nog niet ingeschakeld (upgrade-avatars.sql): zonder foto.
+  if (error && isMissingSchemaError(error)) ({ data, error } = await query("id, display_name, bodyweight_kg, sex, birth_date"));
   if (error) throw error;
   const out = new Map<string, ComparePerson>();
   for (const m of (data ?? []) as unknown as { user_id: string; profiles: ComparePerson | null }[]) {

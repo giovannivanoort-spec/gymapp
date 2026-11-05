@@ -6,6 +6,7 @@ import { useCachedState } from "@/lib/cache";
 import { formatDate } from "@/lib/dates";
 import { EQUIPMENT_LABEL, type Exercise } from "@/lib/exercise-types";
 import { DEFAULT_VIDEOS } from "@/lib/exercise-videos";
+import { defaultTargetReps } from "@/lib/exercises";
 import type { Session } from "@/lib/history";
 import { GROUP_BY_ID, MUSCLE_BY_ID, type MuscleId } from "@/lib/muscles";
 import { supabase } from "@/lib/supabase";
@@ -160,7 +161,7 @@ function InfoBody({
 }) {
   const video = useExerciseVideo(ex.slug);
   const [allTips, setAllTips] = useState(false);
-  const hint = lastHint(last, ex.slug, "8-12", 3);
+  const hint = lastHint(last, ex.slug, defaultTargetReps(ex.slug), 3);
   const tips = allTips ? ex.tips : ex.tips.slice(0, 2);
 
   return (

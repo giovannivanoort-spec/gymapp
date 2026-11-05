@@ -1,5 +1,6 @@
+import { isTimed } from "@/lib/exercises";
 import type { FailedOp, QueuedOp } from "@/lib/offlineQueue";
-import { estimate1RM, rankExercise, type LogLike, type Sex } from "@/lib/ranks";
+import { assistedScore, estimate1RM, formatRankAmount, formatRankBest, isAssisted, maxRepsFor, rankExercise, type LogLike, type Sex } from "@/lib/ranks";
 import type { GroupMember, SetLog, Workout, WorkoutExercise } from "@/lib/types";
 
 export type FullWorkout = Workout & { groups: { name: string } | null; workout_exercises: WorkoutExercise[] };
@@ -27,9 +28,11 @@ export function fmtNum(n: number | null | undefined): string {
 /** Grote getallen met duizendtalpunt (voor volume e.d.). */
 export const fmtBig = (n: number) => Math.round(n).toLocaleString("nl-NL");
 
-export function fmtSet(l: { weight: number | null; reps: number | null }) {
+/** "80 kg × 5", "12 reps", of bij een statische oefening (slug meegegeven) "45 s" / "10 kg × 45 s". */
+export function fmtSet(l: { weight: number | null; reps: number | null }, slug?: string | null) {
   const w = l.weight != null && Number(l.weight) !== 0 ? `${fmtNum(l.weight)} kg` : "";
   const r = l.reps != null ? `${l.reps}` : "–";
+  if (isTimed(slug)) return w ? `${w} × ${r} s` : `${r} s`;
   return w ? `${w} × ${r}` : `${r} reps`;
 }
 
@@ -48,12 +51,18 @@ export function parseReps(s: string): number | null {
   return Number.isFinite(n) ? Math.round(n) : NaN;
 }
 
-/** Vangt typfouten af voordat ze in de database (en in records) belanden. */
-export function validateSet(w: number | null, r: number | null): string | null {
+/**
+ * Vangt typfouten af voordat ze in de database (en in records) belanden. Met `slug` gelden de
+ * grenzen van die oefening: seconden bij statische houdingen, hogere aantallen bij oefeningen
+ * waarvan de standaard boven de 100 reps ligt.
+ */
+export function validateSet(w: number | null, r: number | null, slug?: string | null): string | null {
+  const timed = isTimed(slug);
   if (w !== null && (Number.isNaN(w) || w < 0)) return "Vul een geldig gewicht in, bijv. 62,5.";
   if (w !== null && w > 999) return "Meer dan 999 kg? Controleer het gewicht.";
-  if (r !== null && (Number.isNaN(r) || r < 0)) return "Vul een geldig aantal reps in.";
-  if (r !== null && r > 100) return "Meer dan 100 reps? Controleer het aantal.";
+  if (r !== null && (Number.isNaN(r) || r < 0)) return timed ? "Vul een geldig aantal seconden in." : "Vul een geldig aantal reps in.";
+  const max = maxRepsFor(slug);
+  if (r !== null && r > max) return timed ? "Meer dan een uur? Controleer het aantal seconden." : `Meer dan ${max} reps? Controleer het aantal.`;
   return null;
 }
 
@@ -162,10 +171,32 @@ export function logsBySlug(rows: HistRow[] | undefined): Map<string, LogLike[]> 
   return map;
 }
 
-export type Best = { e1rm: number | null; weight: number; reps: number; set: LogLike | null };
+export type Best = {
+  e1rm: number | null;
+  weight: number;
+  reps: number;
+  set: LogLike | null;
+  /** Assisted machine (gewicht = ondersteuning): beste vergelijkingsscore, minder hulp is beter. */
+  assist?: number;
+};
 
-/** Beste prestatie: hoogste geschatte 1RM, anders zwaarste gewicht, of meeste reps (lichaamsgewicht). */
-export function bestOf(logs: LogLike[]): Best | null {
+/**
+ * Beste prestatie: hoogste geschatte 1RM, anders zwaarste gewicht, of meeste reps (lichaamsgewicht).
+ * Met de slug van een assisted machine telt minder ondersteuning (en meer reps) als beter.
+ */
+export function bestOf(logs: LogLike[], slug?: string | null): Best | null {
+  if (isAssisted(slug)) {
+    let assist: number | null = null;
+    let set: LogLike | null = null;
+    for (const l of logs) {
+      const sc = assistedScore(l.weight, l.reps);
+      if (sc != null && (assist == null || sc > assist)) {
+        assist = sc;
+        set = l;
+      }
+    }
+    return assist == null || !set ? null : { e1rm: null, weight: Number(set.weight ?? 0), reps: set.reps ?? 0, set, assist };
+  }
   let any = false;
   let e1rm: number | null = null;
   let e1rmSet: LogLike | null = null;
@@ -196,16 +227,24 @@ export function bestOf(logs: LogLike[]): Best | null {
   return { e1rm, weight, reps, set: e1rmSet ?? weightSet ?? repsSet };
 }
 
-export function describeBest(b: Best | null): string | null {
+export function describeBest(b: Best | null, slug?: string | null): string | null {
   if (!b || !b.set) return null;
-  if (b.e1rm != null) return `${fmtSet(b.set)} (1RM ≈ ${fmtNum(Math.round(b.e1rm * 2) / 2)} kg)`;
+  if (b.assist != null) return describeAssisted(b.set);
+  if (b.e1rm != null) return `${fmtSet(b.set, slug)} (1RM ≈ ${fmtNum(Math.round(b.e1rm * 2) / 2)} kg)`;
   if (b.weight > 0) return `${fmtNum(b.weight)} kg`;
-  return b.reps > 0 ? `${b.reps} reps` : null;
+  return b.reps > 0 ? `${b.reps} ${isTimed(slug) ? "s" : "reps"}` : null;
+}
+
+/** "20 kg ondersteuning × 8" of "8 reps zonder ondersteuning". */
+function describeAssisted(s: LogLike): string {
+  const w = Number(s.weight ?? 0);
+  return w > 0 ? `${fmtNum(w)} kg ondersteuning × ${s.reps ?? "–"}` : `${s.reps ?? "–"} reps zonder ondersteuning`;
 }
 
 /** Is deze set beter dan alles daarvoor? */
 export function beats(value: LogLike, before: Best | null): boolean {
   if (!before || (value.reps ?? 0) <= 0) return false;
+  if (before.assist != null) return (assistedScore(value.weight, value.reps) ?? 0) > before.assist + 1e-6;
   const w = Number(value.weight ?? 0);
   const r = value.reps ?? 0;
   const e = w > 0 ? estimate1RM(w, r) : null;
@@ -226,18 +265,13 @@ export type Achievement =
 export function detectAchievement(slug: string, before: LogLike[], value: LogLike, p: Profile): Achievement | null {
   if ((value.reps ?? 0) <= 0) return null;
   const after = [...before, value];
-  const prevBest = bestOf(before);
+  const prevBest = bestOf(before, slug);
   const suspicious = isSuspicious(value, prevBest);
 
   const r0 = rankExercise(slug, before, p.bodyweight, p.sex, p.age);
   const r1 = rankExercise(slug, after, p.bodyweight, p.sex, p.age);
   if (r1) {
-    const detail =
-      r1.unit === "reps"
-        ? `${r1.value} reps`
-        : r1.viaAdded
-          ? `+${fmtNum(r1.value)} kg extra (1RM)`
-          : `1RM ≈ ${fmtNum(r1.value)} kg`;
+    const detail = r1.viaAdded ? `${formatRankAmount(r1)} extra (1RM)` : formatRankBest(r1);
     if (!r0 || r1.tierIndex > r0.tierIndex) {
       // De allereerste rang telt alleen als promotie vanaf Zilver (anders is elke eerste set een melding).
       return { kind: "promotion", tierIndex: r1.tierIndex, post: !!r0 || r1.tierIndex >= 1, suspicious: suspicious || (!r0 && r1.tierIndex >= 5), detail };
@@ -249,19 +283,21 @@ export function detectAchievement(slug: string, before: LogLike[], value: LogLik
   // Geen rangstandaard of profiel onvolledig: vergelijk met je eigen beste prestatie.
   if (!beats(value, prevBest)) return null;
   const w = Number(value.weight ?? 0);
-  const e = w > 0 ? estimate1RM(w, value.reps ?? 0) : null;
-  const detail =
-    e != null
-      ? `${fmtSet(value)} (1RM ≈ ${fmtNum(Math.round(e * 2) / 2)} kg)`
+  const e = w > 0 && !isAssisted(slug) ? estimate1RM(w, value.reps ?? 0) : null;
+  const detail = isAssisted(slug)
+    ? describeAssisted(value)
+    : e != null
+      ? `${fmtSet(value, slug)} (1RM ≈ ${fmtNum(Math.round(e * 2) / 2)} kg)`
       : w > 0
         ? `${fmtNum(w)} kg, zwaarder dan ooit`
-        : `${value.reps} reps`;
+        : `${value.reps} ${isTimed(slug) ? "s" : "reps"}`;
   return { kind: "record", detail, suspicious };
 }
 
 /** Onwaarschijnlijke sprong ten opzichte van het vorige beste (waarschijnlijk een typfout). */
 export function isSuspicious(value: LogLike, prev: Best | null): boolean {
   if (!prev) return false;
+  if (prev.assist != null) return (assistedScore(value.weight, value.reps) ?? 0) > prev.assist * 1.3;
   const w = Number(value.weight ?? 0);
   const r = value.reps ?? 0;
   const e = w > 0 ? estimate1RM(w, r) : null;

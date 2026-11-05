@@ -30,12 +30,15 @@ export function DuelChart({
   unit,
   rivalName,
   rivalColor,
+  timed,
 }: {
   mine: DuelPoint[];
   theirs: DuelPoint[];
   unit: "kg" | "reps";
   rivalName: string;
   rivalColor: string;
+  /** Statische oefening: de waarden zijn seconden (langste set), geen reps. */
+  timed?: boolean;
 }) {
   const all = [...mine, ...theirs];
   if (all.length === 0) return null;
@@ -54,14 +57,15 @@ export function DuelChart({
   const Y = (v: number) => PAD.top + (1 - (v - y0) / (y1 - y0 || 1)) * (H - PAD.top - PAD.bottom);
   const path = (pts: DuelPoint[]) => pts.map((p, i) => `${i ? "L" : "M"}${X(p.date).toFixed(1)},${Y(p.value).toFixed(1)}`).join("");
 
-  const fmt = (v: number) => (unit === "kg" ? `${nl(v)} kg` : `${v} reps`);
+  const fmt = (v: number) => (unit === "kg" ? `${nl(v)} kg` : timed ? `${v} s` : `${v} reps`);
+  const what = unit === "kg" ? "geschatte 1RM" : timed ? "langste set" : "max reps";
   const describe = (who: string, pts: DuelPoint[]) =>
     pts.length === 0
       ? `${who}: geen data`
       : pts.length === 1
         ? `${who}: ${fmt(pts[0].value)}`
         : `${who}: van ${fmt(pts[0].value)} naar ${fmt(pts[pts.length - 1].value)}`;
-  const label = `Verloop ${unit === "kg" ? "geschatte 1RM" : "max reps"}. ${describe("Jij", mine)}. ${describe(rivalName, theirs)}.`;
+  const label = `Verloop ${what}. ${describe("Jij", mine)}. ${describe(rivalName, theirs)}.`;
 
   const series = [
     { key: "theirs", pts: theirs, color: rivalColor },
@@ -78,7 +82,7 @@ export function DuelChart({
           <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: rivalColor }} />
           <span className="truncate">{rivalName}</span>
         </span>
-        <span className="ml-auto shrink-0">{unit === "kg" ? "geschatte 1RM (kg)" : "max reps"}</span>
+        <span className="ml-auto shrink-0">{unit === "kg" ? "geschatte 1RM (kg)" : timed ? "langste set (s)" : "max reps"}</span>
       </div>
       <svg viewBox={`0 0 ${W} ${H}`} className="animate-fade-in block h-auto w-full" role="img" aria-label={label}>
         {ticks.map((t) => (

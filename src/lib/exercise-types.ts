@@ -36,4 +36,6 @@ export type Exercise = {
   tips: string[];
   /** Zoekterm voor YouTube (Engels geeft de beste resultaten). */
   videoQuery: string;
+  /** Statische oefening (plank, wall sit): je logt seconden in plaats van reps. */
+  timed?: true;
 };

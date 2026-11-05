@@ -346,7 +346,7 @@ function Workout() {
     const check: Check = {
       id: checkSeq.current,
       key: k,
-      set: `${fmtSet(value)} bij ${exercise}${who ? ` (${who})` : ""}`,
+      set: `${fmtSet(value, slug)} bij ${exercise}${who ? ` (${who})` : ""}`,
       // Alleen vieren als de set intussen niet is aangepast.
       onConfirm: () => {
         if (stillIs(k, value)) fire();
@@ -370,7 +370,7 @@ function Workout() {
     for (const items of groups.values()) {
       const still = items.filter((p) => stillIs(setKey(p.we.id, p.uid, p.n), p.value));
       if (!still.length) continue;
-      const best = bestOf(still.map((p) => p.value))?.set;
+      const best = bestOf(still.map((p) => p.value), still[0].we.exercise_slug)?.set;
       const pick = still.find((p) => p.value === best) ?? still[0];
       const exclude = new Set(still.map((p) => setKey(p.we.id, p.uid, p.n)));
       const pk = setKey(pick.we.id, pick.uid, pick.n);
@@ -400,7 +400,7 @@ function Workout() {
       window.setTimeout(() => {
         feedTimers.current.delete(key);
         const today = (logsRef.current ?? []).filter((l) => l.user_id === uid && ids.has(l.workout_exercise_id) && isDone(l));
-        const best = bestOf(today)?.set;
+        const best = bestOf(today, slug)?.set;
         const a = best ? detectAchievement(slug, hist, best, profile) : null;
         // Een onbevestigde, onwaarschijnlijke sprong zet niets in de feed.
         if (a?.suspicious) return;
@@ -451,7 +451,7 @@ function Workout() {
       if (existing) deleteSet(we, uid, n, existing);
       return "skipped";
     }
-    const invalid = validateSet(w, r);
+    const invalid = validateSet(w, r, we.exercise_slug);
     if (invalid) {
       showError(invalid);
       return "invalid";
@@ -461,7 +461,7 @@ function Workout() {
     const keyObj = { workout_exercise_id: we.id, user_id: uid, set_number: n };
     const before = opts.silent ? null : beforeFor(we, uid, new Set([k]));
     // Een afgeronde set verlaagd: het record in de feed kan dan niet meer kloppen.
-    const lowered = isDone(existing) && !retry && !beats({ weight: w, reps: r }, bestOf([existing!]));
+    const lowered = isDone(existing) && !retry && !beats({ weight: w, reps: r }, bestOf([existing!], we.exercise_slug));
     const previous = existing && !existing.failed ? existing : null;
     pendingSaves.current.set(k, sig);
     writesFor(id).record(k, previous, { weight: w, reps: r });
@@ -590,7 +590,7 @@ function Workout() {
     const ok = sets.filter((_, i) => results[i] === "saved" || results[i] === "queued");
     if (!ok.length) return;
     // Eén melding voor de beste set, niet voor elke set apart (een eventuele controlevraag komt eerst).
-    const best = bestOf(ok.map((s) => ({ weight: s.weight, reps: s.reps })))?.set;
+    const best = bestOf(ok.map((s) => ({ weight: s.weight, reps: s.reps })), we.exercise_slug)?.set;
     const bestSet = best && ok.find((s) => s.weight === best.weight && s.reps === best.reps);
     if (bestSet) {
       const queued = results[sets.indexOf(bestSet)] === "queued";
@@ -797,7 +797,7 @@ function Workout() {
   const myDone = doneSets(allLogs, forUser);
   const myPlanned = plannedFor(forUser);
   const allDone = myPlanned > 0 && myDone >= myPlanned;
-  const bestFor = (uid: string, slug: string) => (derived[uid] ? bestOf(derived[uid].before.get(slug) ?? []) : null);
+  const bestFor = (uid: string, slug: string) => (derived[uid] ? bestOf(derived[uid].before.get(slug) ?? [], slug) : null);
   const personView = (uid: string, slug: string, name?: string): PersonView => ({
     uid,
     name,

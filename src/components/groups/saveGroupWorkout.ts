@@ -1,6 +1,7 @@
 "use client";
 
 import type { BuilderValue } from "@/components/WorkoutBuilder";
+import { defaultTargetReps } from "@/lib/exercises";
 import { supabase } from "@/lib/supabase";
 
 type PgError = { code?: string; message?: string };
@@ -27,7 +28,7 @@ export async function saveGroupWorkout(
     id: it.id ?? null,
     slug: it.slug,
     sets: it.sets,
-    reps: it.reps || "8-12",
+    reps: it.reps || defaultTargetReps(it.slug),
     notes: it.notes?.trim() || null,
   }));
 

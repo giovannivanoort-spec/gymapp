@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { EXERCISE_BY_SLUG } from "@/lib/exercises";
 import type { BoardEntry } from "@/lib/progress/groupBoard";
-import { exampleSetFor, TIERS, type ExerciseRank } from "@/lib/ranks";
+import { formatRankAmount, formatRankBest, nextTierTarget, TIERS, type ExerciseRank } from "@/lib/ranks";
 import { ChevronRightIcon } from "./Icons";
 import { RankBadge, TierProgress } from "./RankBadge";
 
@@ -83,7 +83,7 @@ function CompareLine({ theirs, mine, label }: { theirs: ExerciseRank; mine: Exer
       {diff != null && diff !== 0 && (
         <span className={`ml-auto tabular-nums ${ahead ? "text-accent" : "text-muted"}`}>
           {diff > 0 ? "+" : "−"}
-          {nl(Math.abs(diff))} {mine.unit === "reps" ? "reps" : "kg"}
+          {nl(Math.abs(diff))} {mine.unit === "reps" ? "reps" : mine.unit === "seconds" ? "s" : "kg"}
         </span>
       )}
       {(diff === 0 || (diff == null && equal)) && <span className="ml-auto text-muted">gelijk</span>}
@@ -91,10 +91,9 @@ function CompareLine({ theirs, mine, label }: { theirs: ExerciseRank; mine: Exer
   );
 }
 
-/** "112 kg", "+20 kg" (extra gewicht) of "15 reps". */
+/** "112 kg", "+20 kg" (extra gewicht), "15 reps" of "45 s". */
 function formatBoardValue(e: BoardEntry): string {
-  if (e.unit === "reps") return `${e.value} reps`;
-  return e.viaAdded ? `+${nl(e.value)} kg` : `${nl(e.value)} kg`;
+  return formatRankAmount(e);
 }
 
 /** "Groep 1. Sven 112 kg  2. Jij 105 kg  3. Tom 90 kg": top 3, en jij erbij als je daar buiten valt. */
@@ -122,10 +121,11 @@ function BoardLine({ entries }: { entries: (BoardEntry & { self: boolean })[] })
 const nl = (n: number) => n.toLocaleString("nl-NL", { maximumFractionDigits: 1 });
 
 export function describeRank(r: ExerciseRank): string {
-  const best = r.unit === "reps" ? `${r.value} reps` : r.viaAdded ? `1RM +${nl(r.value)} kg extra` : `1RM ≈ ${nl(r.value)} kg`;
-  if (r.nextAt == null) return `${best} · hoogste rang`;
+  const best = formatRankBest(r);
+  const target = nextTierTarget(r);
+  if (!target) return `${best} · hoogste rang`;
   const next = TIERS[r.tierIndex + 1].name;
-  if (r.unit === "reps") return `${best} · ${r.nextAt} reps voor ${next}`;
-  if (r.viaAdded) return `${best} · +${Math.ceil(r.nextAt)} kg voor ${next}`;
-  return `${best} · ${Math.ceil(r.nextAt)} kg voor ${next} (bijv. ${exampleSetFor(r.nextAt).replace(".", ",")})`;
+  // Bij een 1RM (ook met ondersteuning) helpt een voorbeeldset; bij reps, seconden en gewicht zegt de grens genoeg.
+  const example = r.unit === "kg" && !r.viaAdded && !r.viaLoad ? ` (bijv. ${target.example})` : "";
+  return `${best} · ${target.at} voor ${next}${example}`;
 }

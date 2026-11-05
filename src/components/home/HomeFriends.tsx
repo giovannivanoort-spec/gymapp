@@ -18,7 +18,19 @@ const RING_C = 2 * Math.PI * RING_R;
 const AVATAR = 52;
 
 /** Avatar met een ring die maar één ding betekent: hoe ver iemand is met zijn weekdoel. */
-function GoalRing({ id, name, ratio, loading }: { id: string; name: string; ratio: number; loading: boolean }) {
+function GoalRing({
+  id,
+  name,
+  src,
+  ratio,
+  loading,
+}: {
+  id: string;
+  name: string;
+  src?: string | null;
+  ratio: number;
+  loading: boolean;
+}) {
   const p = Math.min(1, Math.max(0, ratio));
   return (
     <span className="relative block shrink-0" style={{ width: RING, height: RING }}>
@@ -40,7 +52,7 @@ function GoalRing({ id, name, ratio, loading }: { id: string; name: string; rati
         )}
       </svg>
       <span className="absolute inset-0 flex items-center justify-center">
-        <Avatar id={id} name={name} size={AVATAR} />
+        <Avatar id={id} name={name} src={src} size={AVATAR} />
       </span>
     </span>
   );
@@ -150,7 +162,7 @@ export function HomeFriends({
                       recent ? `${count} van ${goal} ${goal === 1 ? "training" : "trainingen"} deze week${met ? ", doel gehaald" : ""}` : "laden"
                     }`}
                   >
-                    <GoalRing id={f.id} name={f.display_name} ratio={ratio} loading={!recent} />
+                    <GoalRing id={f.id} name={f.display_name} src={f.avatar_url} ratio={ratio} loading={!recent} />
                     <span className="w-full truncate text-xs font-semibold">{f.display_name.split(" ")[0]}</span>
                     {recent ? (
                       <span className={`-mt-0.5 text-[11px] tabular-nums ${met ? "font-semibold text-accent" : "text-muted"}`}>
@@ -191,7 +203,7 @@ export function HomeFriends({
                       href={`/friends/${f.id}`}
                       className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-surface-2/50"
                     >
-                      <Avatar id={f.id} name={f.display_name} size={36} />
+                      <Avatar id={f.id} name={f.display_name} src={f.avatar_url} size={36} />
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm">
                           <span className="font-semibold">{f.display_name.split(" ")[0]}</span>

@@ -32,7 +32,8 @@ import {
   useMyFriendCode,
   type FriendProfile,
 } from "@/lib/friends";
-import { supabase } from "@/lib/supabase";
+import { isMissingSchemaError, supabase } from "@/lib/supabase";
+import { PUBLIC_PROFILE_COLUMNS_NO_PHOTO } from "@/lib/types";
 
 type RowError = { id: string; text: string };
 
@@ -61,7 +62,10 @@ export default function FriendsPage() {
   const groupmates = useCached(
     userId ? `groupmates:${userId}` : null,
     async () => {
-      const { data, error } = await supabase.from("group_members").select(`user_id, profiles(${PUBLIC_PROFILE_COLUMNS})`).neq("user_id", userId);
+      const query = (cols: string) => supabase.from("group_members").select(`user_id, profiles(${cols})`).neq("user_id", userId);
+      let { data, error } = await query(PUBLIC_PROFILE_COLUMNS);
+      // upgrade-avatars.sql nog niet gedraaid: zonder profielfoto opnieuw.
+      if (error && isMissingSchemaError(error)) ({ data, error } = await query(PUBLIC_PROFILE_COLUMNS_NO_PHOTO));
       if (error) throw error;
       const seen = new Map<string, FriendProfile>();
       for (const m of (data ?? []) as unknown as { user_id: string; profiles: FriendProfile | null }[]) {
@@ -143,7 +147,7 @@ export default function FriendsPage() {
       </h2>
       {suggestions.map((p, i) => (
         <div key={p.id} className="card animate-fade-up flex items-center gap-3 p-3" style={{ "--i": i } as React.CSSProperties}>
-          <Avatar id={p.id} name={p.display_name} size={40} />
+          <Avatar id={p.id} name={p.display_name} src={p.avatar_url} size={40} />
           <div className="min-w-0 flex-1">
             <p className="truncate font-semibold">{p.display_name}</p>
             {errorFor(p.id) ?? <p className="text-xs text-muted">Zit in een groep met je</p>}
@@ -262,7 +266,7 @@ export default function FriendsPage() {
             {data.incoming.map((p, i) => (
               <div key={p.id} className="card animate-fade-up flex items-center gap-3 p-3" style={{ "--i": i } as React.CSSProperties}>
                 <Link href={`/friends/${p.id}`} className="shrink-0" aria-label={`Profiel van ${p.display_name}`}>
-                  <Avatar id={p.id} name={p.display_name} size={40} />
+                  <Avatar id={p.id} name={p.display_name} src={p.avatar_url} size={40} />
                 </Link>
                 <Link href={`/friends/${p.id}`} className="min-w-0 flex-1">
                   <p className="truncate font-semibold">{p.display_name}</p>
@@ -342,7 +346,7 @@ export default function FriendsPage() {
             {data.outgoing.map((p, i) => (
               <div key={p.id} className="card animate-fade-up flex items-center gap-3 p-3" style={{ "--i": i } as React.CSSProperties}>
                 <Link href={`/friends/${p.id}`} className="flex min-w-0 flex-1 items-center gap-3" aria-label={`Profiel van ${p.display_name}`}>
-                  <Avatar id={p.id} name={p.display_name} size={36} className="shrink-0 opacity-80" />
+                  <Avatar id={p.id} name={p.display_name} src={p.avatar_url} size={36} className="shrink-0 opacity-80" />
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-semibold">{p.display_name}</p>
                     {errorFor(p.id) ?? <p className="text-xs text-muted">Wacht op reactie</p>}
@@ -504,7 +508,7 @@ function WeekBoard({
                 {loaded ? i + 1 : ""}
               </span>
               <span className="relative shrink-0">
-                <Avatar id={p.id} name={p.display_name} size={32} ring={s?.overall?.tier.from} />
+                <Avatar id={p.id} name={p.display_name} src={p.avatar_url} size={32} ring={s?.overall?.tier.from} />
                 {trainedToday && (
                   <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full bg-accent ring-2 ring-surface" aria-hidden />
                 )}

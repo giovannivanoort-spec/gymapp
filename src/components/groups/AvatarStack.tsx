@@ -6,7 +6,7 @@ export function AvatarStack({
   max = 4,
   size = 22,
 }: {
-  people: { id: string; name: string }[];
+  people: { id: string; name: string; src?: string | null }[];
   max?: number;
   size?: number;
 }) {
@@ -19,6 +19,7 @@ export function AvatarStack({
           key={p.id}
           id={p.id}
           name={p.name}
+          src={p.src}
           size={size}
           className={i > 0 ? "-ml-1.5 ring-2 ring-surface" : "ring-2 ring-surface"}
         />

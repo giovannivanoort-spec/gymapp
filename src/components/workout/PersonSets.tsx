@@ -61,10 +61,10 @@ export function PersonSets({
   const baseRows = Math.max(we.target_sets, maxLogged);
   const rows = Math.max(baseRows, wanted);
   const done = logs.filter(isDone);
-  const suggestion = ex && prev ? suggestNext(prev.sets, we.target_reps, we.target_sets, ex.equipment) : null;
+  const suggestion = ex && prev ? suggestNext(prev.sets, we.target_reps, we.target_sets, ex.equipment, { timed: !!ex.timed }) : null;
 
   // Record-markering: de beste set van vandaag, als die je oude record verslaat.
-  const sessionBest = bestOf(done)?.set ?? null;
+  const sessionBest = bestOf(done, we.exercise_slug)?.set ?? null;
 
   function hintFor(n: number) {
     const adv = suggestion?.perSet[n - 1] ?? suggestion?.perSet.at(-1);
@@ -87,7 +87,7 @@ export function PersonSets({
     if (h.reps != null && h.reps > 0) fillable.push({ n, weight: log?.weight ?? h.weight, reps: h.reps });
   }
   const lastRowEmpty = rows > baseRows && !byN.get(rows);
-  const bestText = describeBest(best);
+  const bestText = describeBest(best, we.exercise_slug);
   // Kolom "Vorige" per set (niet in de compacte groepsweergave: daar staat het in één regel).
   const showPrev = !compact && !!prev?.sets.some((p) => p.reps != null || p.weight != null);
   const prevByN = new Map(prev?.sets.map((p) => [p.set_number, p]) ?? []);
@@ -109,10 +109,10 @@ export function PersonSets({
               {suggestion ? (
                 <>
                   <span className="font-medium text-accent">Advies: {suggestion.headline}</span>
-                  {prev && <span> · vorige keer {prev.sets.map(fmtSet).join(", ")}</span>}
+                  {prev && <span> · vorige keer {prev.sets.map((s) => fmtSet(s, we.exercise_slug)).join(", ")}</span>}
                 </>
               ) : (
-                prev && <>Vorige keer: {prev.sets.map(fmtSet).join(", ")}</>
+                prev && <>Vorige keer: {prev.sets.map((s) => fmtSet(s, we.exercise_slug)).join(", ")}</>
               )}
             </p>
           )
@@ -121,7 +121,7 @@ export function PersonSets({
               {prev && (
                 <p className="text-xs text-muted">
                   Vorige keer ({formatDate(prev.date, { weekday: undefined, month: "short" })}):{" "}
-                  <span className="text-ink">{prev.sets.map(fmtSet).join(" · ")}</span>
+                  <span className="text-ink">{prev.sets.map((s) => fmtSet(s, we.exercise_slug)).join(" · ")}</span>
                 </p>
               )}
               {suggestion && !readOnly && (
@@ -151,7 +151,9 @@ export function PersonSets({
           <span className="text-center" title={perHand ? "Gewicht per dumbbell" : ex?.equipment === "bodyweight" ? "Extra gewicht" : undefined}>
             {weightLabel}
           </span>
-          <span className="text-center">Reps</span>
+          <span className="text-center" title={ex?.timed ? "Seconden" : undefined}>
+            {ex?.timed ? "Sec" : "Reps"}
+          </span>
           <span />
         </div>
         {Array.from({ length: rows }, (_, i) => i + 1).map((n) => {
@@ -169,6 +171,7 @@ export function PersonSets({
               personName={name}
               isRecord={!!log && log === sessionBest && beats(log, best)}
               readOnly={readOnly}
+              timed={!!ex?.timed}
               onSave={(w, r) => onSave(n, w, r)}
               onDelete={() => log && onDelete(n, log)}
               onUncomplete={onUncomplete ? () => log && onUncomplete(n, log) : undefined}

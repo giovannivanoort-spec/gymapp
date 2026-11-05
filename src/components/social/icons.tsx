@@ -70,3 +70,16 @@ export const PhoneIcon = (p: Props) => (
     <path d="M11 18h2" />
   </Svg>
 );
+
+export const CameraIcon = (p: Props) => (
+  <Svg {...p}>
+    <path d="M4 8.5A1.5 1.5 0 015.5 7h2l1.6-2.2h5.8L16.5 7h2A1.5 1.5 0 0120 8.5v9a1.5 1.5 0 01-1.5 1.5h-13A1.5 1.5 0 014 17.5z" />
+    <circle cx="12" cy="13" r="3.5" />
+  </Svg>
+);
+
+export const TrashIcon = (p: Props) => (
+  <Svg {...p}>
+    <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6" />
+  </Svg>
+);

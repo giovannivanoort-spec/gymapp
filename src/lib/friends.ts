@@ -3,8 +3,8 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { getCached, invalidate, setCached, useCached } from "./cache";
 import { sessionsBySlug, type HistorySet } from "./history";
-import { errorMessage, supabase } from "./supabase";
-import { PUBLIC_PROFILE_COLUMNS, type Profile } from "./types";
+import { errorMessage, isMissingSchemaError, supabase } from "./supabase";
+import { PUBLIC_PROFILE_COLUMNS, PUBLIC_PROFILE_COLUMNS_NO_PHOTO, type Profile } from "./types";
 
 export type FriendProfile = Profile & { friend_code?: string | null };
 
@@ -43,12 +43,14 @@ type Row = {
  * goede stand houdt in plaats van een lege lijst op te slaan.
  */
 export async function fetchFriends(userId: string): Promise<FriendsState> {
-  const { data, error } = await supabase
-    .from("friendships")
-    .select(
-      `requester, addressee, status, req:profiles!friendships_requester_fkey(${PUBLIC_PROFILE_COLUMNS}), adr:profiles!friendships_addressee_fkey(${PUBLIC_PROFILE_COLUMNS})`,
-    )
-    .order("created_at");
+  const query = (cols: string) =>
+    supabase
+      .from("friendships")
+      .select(`requester, addressee, status, req:profiles!friendships_requester_fkey(${cols}), adr:profiles!friendships_addressee_fkey(${cols})`)
+      .order("created_at");
+  let { data, error } = await query(PUBLIC_PROFILE_COLUMNS);
+  // upgrade-avatars.sql nog niet gedraaid: zonder profielfoto opnieuw.
+  if (error && isMissingSchemaError(error)) ({ data, error } = await query(PUBLIC_PROFILE_COLUMNS_NO_PHOTO));
   if (error) throw error;
   const out: FriendsState = { friends: [], incoming: [], outgoing: [] };
   for (const r of (data ?? []) as unknown as Row[]) {

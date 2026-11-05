@@ -342,8 +342,9 @@ function Ranks() {
           )}
 
           <p className="text-center text-xs text-muted">
-            Rang op basis van de geschatte 1RM ten opzichte van krachtstandaarden per oefening, geslacht, leeftijd en lichaamsgewicht (bron:
-            StrengthLevel.com). Bij dumbbells telt het gewicht per dumbbell.
+            Rang op basis van de geschatte 1RM (of reps, of seconden bij statische oefeningen) ten opzichte van krachtstandaarden per
+            oefening, geslacht, leeftijd en lichaamsgewicht (bron: StrengthLevel.com). Waar die ontbreken, gebruiken we een schatting op
+            basis van een vergelijkbare oefening. Bij dumbbells telt het gewicht per dumbbell.
           </p>
         </div>
       )}

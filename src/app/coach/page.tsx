@@ -36,6 +36,7 @@ import { SwapSheet } from "@/components/planning/SwapSheet";
 import { invalidate, useCached } from "@/lib/cache";
 import {
   artifactFrom,
+  asksDeleteConfirmation,
   followupsFor,
   formatShortDate,
   planGroupWorkout,
@@ -51,6 +52,8 @@ import {
 import { timeAgo } from "@/lib/dates";
 import { fetchMyGroups, myGroupsKey, type MyGroup } from "@/lib/groups";
 import { supabase } from "@/lib/supabase";
+import { putTemplateInCache, removeTemplateFromCache } from "@/lib/templates";
+import type { Template } from "@/lib/types";
 
 // ───────── Types ─────────
 
@@ -68,6 +71,8 @@ type ChatItem = {
   tools: ToolChip[];
   artifacts: Artifact[];
   proposals: ProposalItem[];
+  /** De coach vroeg in dit antwoord om bevestiging voor het verwijderen van een schema. */
+  pendingDelete?: boolean;
   /** Voortgangsnotitie van de coach terwijl hij tools gebruikt. */
   status?: string;
   stopped?: boolean;
@@ -163,9 +168,20 @@ function draftFrom(params: URLSearchParams): { text: string; ctx?: Ctx } {
   return { text: m ? q.replace(m[0], "") : q, ctx: workout ? { workout_id: workout } : undefined };
 }
 
-/** Na een opgeslagen schema of training: de lijsten elders in de app verversen. */
-function invalidateFor(kind: Artifact["kind"]) {
-  if (kind === "template") {
+/**
+ * Na een opgeslagen, aangepast of verwijderd schema of een training: de lijsten elders in de app verversen.
+ * Een verwijderd schema gaat meteen uit de lijst in de cache; van een aangepast schema komt de nieuwe
+ * versie in de lijst (het blijft dus zichtbaar, ook als het verversen daarna mislukt).
+ */
+function invalidateFor(kind: Artifact["kind"], template?: { userId: string; id?: string }) {
+  if (kind === "template" || kind === "deleted") {
+    const userId = template?.userId;
+    const id = template?.id;
+    if (userId && id && kind === "template") {
+      void refreshTemplate(userId, id);
+      return;
+    }
+    if (userId && id) removeTemplateFromCache(userId, id);
     invalidate("templates");
     return;
   }
@@ -175,6 +191,32 @@ function invalidateFor(kind: Artifact["kind"]) {
   invalidate("history:");
   invalidate("feed:");
   invalidate("wo:workout:");
+}
+
+/** Haalt één aangepast schema op en zet het in de lijst in de cache; daarna de lijsten verversen. */
+async function refreshTemplate(userId: string, id: string) {
+  try {
+    const { data, error } = await supabase.from("templates").select("*").eq("id", id).maybeSingle();
+    if (!error) {
+      if (data) putTemplateInCache(userId, data as Template);
+      else removeTemplateFromCache(userId, id);
+    }
+  } catch {
+    // geen verbinding: het verversen hieronder probeert het later opnieuw
+  } finally {
+    invalidate("templates");
+  }
+}
+
+/**
+ * Na een antwoord dat via de database binnenkwam (verbinding weg, of na Stop): de schema-caches
+ * bijwerken voor de kaartjes van dat antwoord, net als bij het "artifact"-event van de stream.
+ */
+function syncTemplateCaches(userId: string | null | undefined, item: ChatItem | undefined) {
+  if (!item || item.role !== "assistant") return;
+  for (const a of item.artifacts) {
+    if (a.kind === "template" || a.kind === "deleted") invalidateFor(a.kind, userId ? { userId, id: a.id } : undefined);
+  }
 }
 
 /** Markdown naar platte tekst voor de schermlezer-melding. */
@@ -231,6 +273,7 @@ function toItems(rows: StoredRow[], openTail: boolean): ChatItem[] {
           const data = JSON.parse(r.content);
           const a = artifactFrom(p.name, data);
           if (a) p.item.artifacts.push(a);
+          if (asksDeleteConfirmation(p.name, data)) p.item.pendingDelete = true;
           const proposal = proposalFrom(p.name, data) as Proposal | null;
           if (proposal) p.item.proposals.push({ proposal, toolUseId: r.tool_use_id, planned: r.planned });
         } catch {
@@ -573,6 +616,7 @@ function Coach() {
     try {
       const fresh = await fetchConversation(id);
       setItems((prev) => adoptKeys(prev, fresh.items));
+      syncTemplateCaches(userId, fresh.items.at(-1));
     } catch {
       // laat staan wat er staat
     }
@@ -601,6 +645,7 @@ function Coach() {
           const note = stoppingRef.current ? "Stoppen…" : STILL_WORKING;
           setItems((prev) => adoptKeys(prev, running ? withPending(fresh.items, note) : fresh.items));
           if (!running) {
+            syncTemplateCaches(userId, fresh.items.at(-1));
             if (fresh.open) {
               setError({ message: "Het antwoord werd onderbroken. Laat de coach het afmaken.", retry: { kind: "continue", conversationId: id } });
             } else {
@@ -705,11 +750,21 @@ function Coach() {
         status: undefined,
         tools: a.tools.map((t) => (t.state === "running" ? { ...t, state: "stopped" } : t)),
       }));
-      // Een schema of training kan alsnog zijn opgeslagen (de server maakt een tool-ronde af): lijsten later verversen.
+      // Een schema of training kan alsnog zijn opgeslagen, aangepast of verwijderd (de server maakt een
+      // tool-ronde af): straks de opgeslagen resultaten lezen en de caches daarop bijwerken.
       if (writing.size) {
+        const toolIds = [...writing];
+        const conv = streamConv;
         setTimeout(() => {
-          invalidateFor("template");
           invalidateFor("workout");
+          if (!conv) return invalidateFor("template");
+          fetchConversation(conv)
+            .then((fresh) => {
+              const item = fresh.items.findLast((it) => it.tools.some((t) => toolIds.includes(t.id)));
+              if (item?.artifacts.some((a) => a.kind !== "workout")) syncTemplateCaches(userId, item);
+              else invalidateFor("template");
+            })
+            .catch(() => invalidateFor("template"));
         }, 2000);
       }
     };
@@ -838,12 +893,14 @@ function Coach() {
               break;
             case "artifact": {
               const art: Artifact = {
-                kind: e.kind === "workout" ? "workout" : "template",
+                kind: e.kind === "workout" || e.kind === "deleted" ? e.kind : "template",
                 link: e.link as string,
                 title: e.title as string,
                 detail: (e.detail as string) ?? "",
+                ...(typeof e.label === "string" && { label: e.label }),
+                ...(typeof e.id === "string" && { id: e.id }),
               };
-              invalidateFor(art.kind);
+              invalidateFor(art.kind, { userId, id: art.id });
               patch((a) => ({ ...a, artifacts: [...a.artifacts, art] }));
               break;
             }
@@ -853,6 +910,9 @@ function Coach() {
               if (p) patch((a) => ({ ...a, proposals: [...a.proposals, { proposal: p, toolUseId }] }));
               break;
             }
+            case "confirm":
+              patch((a) => ({ ...a, pendingDelete: true }));
+              break;
             case "done":
               finished = true;
               break;
@@ -1176,6 +1236,8 @@ function Coach() {
         hasTemplate: lastItem.artifacts.some((a) => a.kind === "template"),
         hasWorkout: lastItem.artifacts.some((a) => a.kind === "workout"),
         hasProposal: lastItem.proposals.length > 0,
+        hasDeleted: lastItem.artifacts.some((a) => a.kind === "deleted"),
+        pendingDelete: !!lastItem.pendingDelete,
         trainerGroup: trainerGroup?.name,
       },
     );
@@ -1585,25 +1647,39 @@ const AssistantMessage = memo(function AssistantMessage({
         />
       ))}
 
-      {item.artifacts.map((a) => (
-        <Link
-          key={a.link}
-          href={a.link}
-          className="card animate-scale-in flex items-center gap-3 p-3 transition-colors hover:border-accent active:scale-[0.99]"
-        >
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent/15 text-accent">
-            {a.kind === "template" ? <ClipboardIcon size={20} /> : <CalendarIcon size={20} />}
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block text-xs text-muted">{a.kind === "template" ? "Schema opgeslagen" : "Training klaargezet"}</span>
-            <span className="block truncate font-semibold">{a.title}</span>
-            {a.detail && <span className="block truncate text-xs text-muted">{a.detail}</span>}
-          </span>
-          <span className="flex shrink-0 items-center gap-0.5 text-xs font-semibold text-accent">
-            Openen <ChevronRightIcon size={14} />
-          </span>
-        </Link>
-      ))}
+      {item.artifacts.map((a, i) =>
+        a.kind === "deleted" ? (
+          <div key={`deleted:${a.id ?? i}`} className="card animate-scale-in flex items-center gap-3 p-3">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-surface-2 text-muted">
+              <ClipboardIcon size={20} />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-xs text-muted">{a.label ?? "Schema verwijderd"}</span>
+              <span className="block truncate font-semibold">{a.title}</span>
+            </span>
+          </div>
+        ) : (
+          <Link
+            key={`${a.link}:${i}`}
+            href={a.link}
+            className="card animate-scale-in flex items-center gap-3 p-3 transition-colors hover:border-accent active:scale-[0.99]"
+          >
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent/15 text-accent">
+              {a.kind === "template" ? <ClipboardIcon size={20} /> : <CalendarIcon size={20} />}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-xs text-muted">
+                {a.label ?? (a.kind === "template" ? "Schema opgeslagen" : "Training klaargezet")}
+              </span>
+              <span className="block truncate font-semibold">{a.title}</span>
+              {a.detail && <span className="block truncate text-xs text-muted">{a.detail}</span>}
+            </span>
+            <span className="flex shrink-0 items-center gap-0.5 text-xs font-semibold text-accent">
+              Openen <ChevronRightIcon size={14} />
+            </span>
+          </Link>
+        ),
+      )}
 
       {!live && (item.stopped || item.text || onRegenerate) && (
         <div className="flex items-center gap-3 px-1 text-xs text-muted">

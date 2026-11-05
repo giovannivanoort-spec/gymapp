@@ -12,6 +12,8 @@ export type Profile = {
   birth_date: string | null;
   /** Aantal trainingen per week dat iemand wil halen (1–7). */
   weekly_goal?: number | null;
+  /** Publieke URL van de profielfoto (Supabase Storage, bucket "avatars"); null = initialen. Zie upgrade-avatars.sql. */
+  avatar_url?: string | null;
 };
 
 /**
@@ -20,7 +22,10 @@ export type Profile = {
  * profiel: profiles bevat ook voedingsdoelen (kcal_target, nutrition_goal, ...) en voeding blijft
  * privé. Embedden kan zo: `group_members.select(\`*, profiles(${PUBLIC_PROFILE_COLUMNS})\`)`.
  */
-export const PUBLIC_PROFILE_COLUMNS = "id, display_name, bodyweight_kg, sex, height_cm, birth_date, weekly_goal";
+export const PUBLIC_PROFILE_COLUMNS = "id, display_name, bodyweight_kg, sex, height_cm, birth_date, weekly_goal, avatar_url";
+
+/** Zelfde kolommen zonder profielfoto: om opnieuw te proberen als upgrade-avatars.sql nog niet is gedraaid. */
+export const PUBLIC_PROFILE_COLUMNS_NO_PHOTO = PUBLIC_PROFILE_COLUMNS.replace(", avatar_url", "");
 
 /** Minimale kolommen die er altijd zijn (ook als de extra SQL-scripts nog niet gedraaid zijn). */
 export const BASE_PROFILE_COLUMNS = "id, display_name";

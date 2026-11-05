@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { ArrowDownIcon, ArrowUpIcon, SparkleIcon, TrophyIcon } from "@/components/Icons";
 import { Sheet } from "@/components/Sheet";
-import { EXERCISE_BY_SLUG } from "@/lib/exercises";
+import { EXERCISE_BY_SLUG, isTimed } from "@/lib/exercises";
 import { postFinished } from "@/lib/offlineQueue";
 import type { GroupMember, WorkoutExercise } from "@/lib/types";
 import {
@@ -43,10 +43,18 @@ function countRecords(exercises: WorkoutExercise[], sets: LogRow[], history: His
   let n = 0;
   for (const slug of slugs) {
     const ids = new Set(exercises.filter((e) => e.exercise_slug === slug).map((e) => e.id));
-    const today = bestOf(sets.filter((l) => ids.has(l.workout_exercise_id)));
-    if (today?.set && beats(today.set, bestOf(before.get(slug) ?? []))) n++;
+    const today = bestOf(sets.filter((l) => ids.has(l.workout_exercise_id)), slug);
+    if (today?.set && beats(today.set, bestOf(before.get(slug) ?? [], slug))) n++;
   }
   return n;
+}
+
+/** "45 s", "2 min" of "2 min 30 s". */
+function fmtDuration(sec: number): string {
+  if (sec < 60) return `${sec} s`;
+  const m = Math.floor(sec / 60);
+  const r = sec % 60;
+  return r ? `${m} min ${r} s` : `${m} min`;
 }
 
 /** Samenvatting na de training: sets, volume, records en vergelijking met vorige keer. */
@@ -84,8 +92,12 @@ export function FinishSheet({
   const mine = logs.filter((l) => l.user_id === uid && isDone(l));
   const planned = plannedSets(exercises, logs, uid);
   const done = mine.length;
-  const volume = volumeOf(mine);
-  const reps = repsOf(mine);
+  // Statische oefeningen (plank, wall sit): reps zijn seconden, die tellen apart als tijd.
+  const timedIds = new Set(exercises.filter((e) => isTimed(e.exercise_slug)).map((e) => e.id));
+  const repSets = mine.filter((l) => !timedIds.has(l.workout_exercise_id));
+  const volume = volumeOf(repSets);
+  const reps = repsOf(repSets);
+  const seconds = repsOf(mine.filter((l) => timedIds.has(l.workout_exercise_id)));
   const times = mine.map((l) => Date.parse(l.created_at)).filter((t) => Number.isFinite(t) && t > 0);
   const minutes = times.length >= 2 ? Math.round((Math.max(...times) - Math.min(...times)) / 60000) : null;
   const prev = prevSessions(history, workout.date);
@@ -104,8 +116,9 @@ export function FinishSheet({
       if (todayVol > 0 && prevVol > 0) delta = (todayVol - prevVol) / prevVol;
       else if (todayVol === 0 && prevVol === 0 && prevReps > 0) delta = (todayReps - prevReps) / prevReps;
     }
-    const sessionBest = bestOf(sets);
-    const record = sessionBest?.set && beats(sessionBest.set, bestOf(allBefore.get(we.exercise_slug) ?? [])) ? describeBest(sessionBest) : null;
+    const sessionBest = bestOf(sets, we.exercise_slug);
+    const record =
+      sessionBest?.set && beats(sessionBest.set, bestOf(allBefore.get(we.exercise_slug) ?? [], we.exercise_slug)) ? describeBest(sessionBest, we.exercise_slug) : null;
     return { we, sets, delta, record, name: EXERCISE_BY_SLUG[we.exercise_slug]?.name ?? we.exercise_slug };
   });
   const records = perExercise.filter((e) => e.record);
@@ -171,7 +184,11 @@ export function FinishSheet({
           <>
             <div className="grid grid-cols-3 gap-2">
               <Stat label="Sets" value={`${done}/${planned}`} accent={done >= planned} i={0} />
-              <Stat label={volume > 0 ? "Volume" : "Reps"} value={volume > 0 ? `${fmtBig(volume)} kg` : String(reps)} i={1} />
+              <Stat
+                label={volume > 0 ? "Volume" : reps > 0 || seconds === 0 ? "Reps" : "Tijd"}
+                value={volume > 0 ? `${fmtBig(volume)} kg` : reps > 0 || seconds === 0 ? String(reps) : fmtDuration(seconds)}
+                i={1}
+              />
               <Stat label="Duur" value={minutes != null && minutes < 360 ? `${minutes} min` : "–"} i={2} />
             </div>
 
@@ -203,7 +220,7 @@ export function FinishSheet({
                   <li key={e.we.id} className="flex items-start justify-between gap-3 px-3 py-2.5">
                     <div className="min-w-0">
                       <p className="truncate text-sm font-medium">{e.name}</p>
-                      <p className="text-xs text-muted">{e.sets.length ? e.sets.map(fmtSet).join(" · ") : "Niet gedaan"}</p>
+                      <p className="text-xs text-muted">{e.sets.length ? e.sets.map((l) => fmtSet(l, e.we.exercise_slug)).join(" · ") : "Niet gedaan"}</p>
                     </div>
                     {e.delta != null && Math.abs(e.delta) >= 0.005 && (
                       <span

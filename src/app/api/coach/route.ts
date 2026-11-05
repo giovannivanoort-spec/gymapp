@@ -3,7 +3,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { after } from "next/server";
 import { COACH_SYSTEM, coachContext, type ContextGroup } from "@/lib/coach/prompt";
-import { artifactFrom, fetchMyProfile, proposalFrom, STOP_MARK } from "@/lib/coach/shared";
+import { artifactFrom, asksDeleteConfirmation, fetchMyProfile, proposalFrom, STOP_MARK, type Artifact } from "@/lib/coach/shared";
 import { runTool, TOOL_DEFINITIONS, toolLabel } from "@/lib/coach/tools";
 
 // Een antwoord met meerdere tool-rondes kan even duren.
@@ -46,8 +46,10 @@ type Event =
   | { t: "status"; d: string }
   | { t: "tool"; id: string; name: string; label: string }
   | { t: "tool_done"; id: string; ok: boolean }
-  | { t: "artifact"; kind: "template" | "workout"; link: string; title: string; detail: string }
+  | ({ t: "artifact" } & Artifact)
   | { t: "proposal"; data: unknown; id: string }
+  /** delete_template vroeg om bevestiging: de chat biedt dan ja/nee aan. */
+  | { t: "confirm"; id: string }
   /** Hartslag: zo ziet de chat het verschil tussen "denkt lang na" en "verbinding weg". */
   | { t: "ping" }
   | { t: "done" }
@@ -789,13 +791,15 @@ function startAnswer({
         const results = await Promise.all(
           toolUses.map(async (tu) => {
             if (!announced.has(tu.id)) send({ t: "tool", id: tu.id, name: tu.name, label: toolLabel(tu.name) });
-            const r = await runTool(tu.name, tu.input, { sb, userId });
+            // history: delete_template controleert daarmee of de gebruiker het verwijderen heeft bevestigd.
+            const r = await runTool(tu.name, tu.input, { sb, userId, history: messages });
             send({ t: "tool_done", id: tu.id, ok: !r.isError });
             if (!r.isError) {
               const artifact = artifactFrom(tu.name, r.data);
               if (artifact) send({ t: "artifact", ...artifact });
               const proposal = proposalFrom(tu.name, r.data);
               if (proposal) send({ t: "proposal", data: proposal, id: tu.id });
+              if (asksDeleteConfirmation(tu.name, r.data)) send({ t: "confirm", id: tu.id });
             }
             return {
               type: "tool_result" as const,

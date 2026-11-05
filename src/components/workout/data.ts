@@ -2,8 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { fetchCached, getCached, useCached } from "@/lib/cache";
-import { errorMessage, supabase } from "@/lib/supabase";
-import { PUBLIC_PROFILE_COLUMNS, type Comment, type GroupMember, type SetLog } from "@/lib/types";
+import { errorMessage, isMissingSchemaError, supabase } from "@/lib/supabase";
+import { PUBLIC_PROFILE_COLUMNS, PUBLIC_PROFILE_COLUMNS_NO_PHOTO, type Comment, type GroupMember, type SetLog } from "@/lib/types";
 import { normalizeLog, type FullWorkout, type HistRow, type WorkoutBundle } from "./logic";
 
 export type CommentWithAuthor = Comment & { profiles: { display_name: string } | null };
@@ -28,13 +28,13 @@ export async function fetchWorkout(id: string): Promise<WorkoutBundle | null> {
   if (error && error.code === "22P02") return null;
   if (error) fail(error);
   if (!data) return null;
-  const { data: m, error: e2 } = await supabase
-    .from("group_members")
-    .select(`*, profiles(${PUBLIC_PROFILE_COLUMNS})`)
-    .eq("group_id", data.group_id)
-    .order("joined_at");
+  const members = (cols: string) =>
+    supabase.from("group_members").select(`*, profiles(${cols})`).eq("group_id", data.group_id).order("joined_at");
+  let { data: m, error: e2 } = await members(PUBLIC_PROFILE_COLUMNS);
+  // upgrade-avatars.sql nog niet gedraaid: zonder profielfoto opnieuw.
+  if (e2 && isMissingSchemaError(e2)) ({ data: m, error: e2 } = await members(PUBLIC_PROFILE_COLUMNS_NO_PHOTO));
   if (e2) fail(e2);
-  return { workout: data as FullWorkout, members: (m as GroupMember[]) ?? [] };
+  return { workout: data as FullWorkout, members: (m as unknown as GroupMember[] | null) ?? [] };
 }
 
 /** Alle sets van alle personen in deze training. */

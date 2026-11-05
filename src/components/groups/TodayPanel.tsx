@@ -215,7 +215,7 @@ export function TodayPanel({
                   }`}
                 >
                   <span className="relative shrink-0">
-                    <Avatar id={m.user_id} name={name} size={32} />
+                    <Avatar id={m.user_id} name={name} src={m.profiles?.avatar_url} size={32} />
                     {p.finished && (
                       <span className="animate-pop absolute -bottom-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-accent text-accent-ink ring-2 ring-surface">
                         <CheckIcon size={10} strokeWidth={3} />

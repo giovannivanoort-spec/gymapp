@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useAuth } from "@/components/AuthProvider";
 import { Avatar } from "@/components/Avatar";
 import { ArrowDownIcon, ArrowUpIcon, UserPlusIcon } from "@/components/Icons";
 import { RankBadge } from "@/components/RankBadge";
@@ -72,10 +73,11 @@ export function CompareStrip({ me, mine, myName = "Jij" }: { me: string; mine?: 
 }
 
 function SelfChip({ id, name, overall }: { id: string; name: string; overall: OverallRank | null }) {
+  const { profile } = useAuth();
   return (
     <li className="animate-fade-up shrink-0" style={{ order: orderFor(overall?.score ?? null) }}>
       <div className="flex w-16 flex-col items-center gap-1 rounded-xl bg-surface-2/60 py-1">
-        <ChipAvatar id={id} name={name} overall={overall} highlight />
+        <ChipAvatar id={id} name={name} src={profile?.avatar_url} overall={overall} highlight />
         <span className="w-full truncate text-center text-xs font-bold">
           Jij<span className="sr-only">:</span>
         </span>
@@ -127,7 +129,7 @@ function PersonChip({ person, index, mine }: { person: Person; index: number; mi
         className="flex w-16 flex-col items-center gap-1 rounded-xl py-1 transition hover:bg-surface-2/60 active:scale-95"
         aria-label={label}
       >
-        <ChipAvatar id={person.id} name={person.display_name} overall={overall} loading={loadingRank} />
+        <ChipAvatar id={person.id} name={person.display_name} src={person.avatar_url} overall={overall} loading={loadingRank} />
         <span className="w-full truncate text-center text-xs font-medium" aria-hidden>
           {first}
         </span>
@@ -166,19 +168,21 @@ function PersonChip({ person, index, mine }: { person: Person; index: number; mi
 function ChipAvatar({
   id,
   name,
+  src,
   overall,
   loading = false,
   highlight = false,
 }: {
   id: string;
   name: string;
+  src?: string | null;
   overall: OverallRank | null;
   loading?: boolean;
   highlight?: boolean;
 }) {
   return (
     <span className={`relative inline-flex rounded-full ${highlight ? "ring-2 ring-accent/70 ring-offset-2 ring-offset-bg" : ""}`}>
-      <Avatar id={id} name={name} size={48} />
+      <Avatar id={id} name={name} src={src} size={48} />
       {loading ? (
         <span className="skeleton absolute -bottom-1 -right-1 h-[22px] w-[22px] rounded-full" aria-hidden />
       ) : (

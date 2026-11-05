@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { ChevronRightIcon } from "@/components/Icons";
 import { formatDate, toISODate } from "@/lib/dates";
+import { isTimed } from "@/lib/exercises";
 import { nl, type HistorySet, type Session } from "@/lib/history";
 import { exerciseName, isWeighted, sessionValue } from "@/lib/progress/records";
 import { estimate1RM } from "@/lib/ranks";
@@ -110,7 +111,7 @@ export function DayDetail({
                         <tr className="text-left text-[11px] uppercase tracking-wide text-muted">
                           <th className="w-10 py-1 font-medium">Set</th>
                           <th className="py-1 font-medium">Kg</th>
-                          <th className="py-1 font-medium">Reps</th>
+                          <th className="py-1 font-medium">{isTimed(slug) ? "Sec" : "Reps"}</th>
                           <th className="py-1 text-right font-medium">{weighted ? "1RM" : <span className="sr-only">Record</span>}</th>
                         </tr>
                       </thead>

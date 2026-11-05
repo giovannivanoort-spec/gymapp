@@ -5,29 +5,37 @@ import { useEffect, useMemo, useRef } from "react";
 import { Avatar } from "@/components/Avatar";
 import { CheckIcon, PlusIcon } from "@/components/Icons";
 import type { HistorySet } from "@/lib/history";
-import { supabase } from "@/lib/supabase";
+import { isMissingSchemaError, supabase } from "@/lib/supabase";
 import { exerciseCount, exercisesLabel, findRecords, kg, progressOf, type TodayLog, type TodayMember, type UpcomingWorkout } from "./data";
 import { refreshLive, strict, useLive } from "./live";
 
 type State = "empty" | "start" | "progress" | "done";
 
 type LiveLog = TodayLog & { id: string };
-type LiveDetail = { logs: LiveLog[]; members: TodayMember[]; exerciseIds: string[] };
+type LiveDetail = { logs: LiveLog[]; members: (TodayMember & { avatar_url?: string | null })[]; exerciseIds: string[] };
 
 /** Wacht na de eerste set van een reeks zo lang, zodat een golf aan sets één verversing geeft. */
 const REFRESH_DELAY = 1_500;
 
 /** Sets van deze training (iedereen in de groep), de leden en de oefening-ids (voor het live filter). */
 async function fetchTodayLive(workoutId: string, groupId: string): Promise<LiveDetail> {
-  const [logs, members, exercises] = await Promise.all([
+  const membersQuery = (withPhoto: boolean) =>
+    supabase
+      .from("group_members")
+      .select(withPhoto ? "user_id, role, profiles(display_name, avatar_url)" : "user_id, role, profiles(display_name)")
+      .eq("group_id", groupId);
+  const [logs, firstMembers, exercises] = await Promise.all([
     supabase
       .from("set_logs")
       .select("id, user_id, workout_exercise_id, reps, weight, workout_exercises!inner(workout_id)")
       .eq("workout_exercises.workout_id", workoutId)
       .gt("reps", 0),
-    supabase.from("group_members").select("user_id, role, profiles(display_name)").eq("group_id", groupId),
+    membersQuery(true),
     supabase.from("workout_exercises").select("id").eq("workout_id", workoutId),
   ]);
+  // Profielfoto's nog niet ingeschakeld (upgrade-avatars.sql): zonder foto.
+  const members =
+    firstMembers.error && isMissingSchemaError(firstMembers.error) ? await membersQuery(false) : firstMembers;
   if (logs.error) throw logs.error;
   if (members.error) throw members.error;
   if (exercises.error) throw exercises.error;
@@ -40,8 +48,13 @@ async function fetchTodayLive(workoutId: string, groupId: string): Promise<LiveD
       weight: l.weight != null ? Number(l.weight) : null,
     })),
     members: (members.data ?? []).map((m) => {
-      const p = m.profiles as unknown as { display_name: string } | null;
-      return { user_id: m.user_id as string, role: m.role as TodayMember["role"], name: p?.display_name ?? "Onbekend" };
+      const p = m.profiles as unknown as { display_name: string; avatar_url?: string | null } | null;
+      return {
+        user_id: m.user_id as string,
+        role: m.role as TodayMember["role"],
+        name: p?.display_name ?? "Onbekend",
+        avatar_url: p?.avatar_url ?? null,
+      };
     }),
     exerciseIds: (exercises.data ?? []).map((e) => String(e.id)),
   };
@@ -209,6 +222,7 @@ export function TodaySession({
                     <Avatar
                       id={m.user_id}
                       name={m.name}
+                      src={m.avatar_url}
                       size={26}
                       ring={done ? "var(--color-accent)" : m.done > 0 ? "color-mix(in srgb, var(--color-accent) 45%, transparent)" : undefined}
                       className={m.done === 0 ? "opacity-50" : ""}

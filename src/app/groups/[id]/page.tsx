@@ -148,6 +148,7 @@ export default function GroupPage() {
   }, [past]);
 
   const nameOf = useCallback((uid: string) => memberName(members.find((m) => m.user_id === uid)), [members]);
+  const photoOf = useCallback((uid: string) => members.find((m) => m.user_id === uid)?.profiles?.avatar_url ?? null, [members]);
 
   function selectTab(next: TabKey, focus = false) {
     setTab(next);
@@ -376,6 +377,7 @@ export default function GroupPage() {
                             present={w.date === today ? (attendance[w.id] ?? []) : null}
                             memberCount={members.length}
                             nameOf={nameOf}
+                            photoOf={photoOf}
                           />
                         </li>
                       ))}
@@ -405,6 +407,7 @@ export default function GroupPage() {
                             present={attendance[w.id] ?? []}
                             memberCount={members.length}
                             nameOf={nameOf}
+                            photoOf={photoOf}
                             replanHref={isTrainer ? `/groups/${id}/plan?from=${w.id}` : undefined}
                           />
                         </li>
@@ -446,7 +449,7 @@ export default function GroupPage() {
                           href={`/ranks?user=${m.user_id}`}
                           className="flex min-w-0 flex-1 items-center gap-3 rounded-2xl px-4 py-3 transition hover:bg-surface-2"
                         >
-                          <Avatar id={m.user_id} name={name} size={36} />
+                          <Avatar id={m.user_id} name={name} src={m.profiles?.avatar_url} size={36} />
                           <div className="min-w-0 flex-1">
                             <p className="truncate font-medium">
                               {name}
@@ -597,6 +600,7 @@ function WorkoutRow({
   present,
   memberCount,
   nameOf,
+  photoOf,
   replanHref,
 }: {
   w: GroupWorkout;
@@ -605,6 +609,7 @@ function WorkoutRow({
   present: string[] | null;
   memberCount: number;
   nameOf: (uid: string) => string;
+  photoOf?: (uid: string) => string | null;
   replanHref?: string;
 }) {
   const isToday = w.date === today;
@@ -636,7 +641,7 @@ function WorkoutRow({
             <div className="mt-1.5 flex items-center gap-2 text-xs text-muted">
               {present.length > 0 ? (
                 <>
-                  <AvatarStack people={present.map((uid) => ({ id: uid, name: nameOf(uid) }))} size={20} />
+                  <AvatarStack people={present.map((uid) => ({ id: uid, name: nameOf(uid), src: photoOf?.(uid) }))} size={20} />
                   <span className="truncate">
                     {present.length} van {memberCount} getraind
                   </span>

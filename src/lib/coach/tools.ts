@@ -4,12 +4,12 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { analyzePlan } from "@/lib/analysis";
 import { EQUIPMENT_LABEL } from "@/lib/exercise-types";
-import { EXERCISES, EXERCISE_BY_SLUG } from "@/lib/exercises";
+import { defaultTargetReps, EXERCISES, EXERCISE_BY_SLUG } from "@/lib/exercises";
 import { GROUP_BY_ID, MUSCLE_BY_ID, MUSCLE_GROUPS, MUSCLES, type MuscleGroupId, type MuscleId } from "@/lib/muscles";
-import { aggregateRanks, rankExercise } from "@/lib/ranks";
+import { aggregateRanks, formatRankBest, nextTierTarget, rankExercise } from "@/lib/ranks";
 import { computeTargets, type NutritionProfile } from "@/lib/nutrition/targets";
 import { ageFrom } from "@/lib/dates";
-import { PUBLIC_PROFILE_COLUMNS, type Profile } from "@/lib/types";
+import { PUBLIC_PROFILE_COLUMNS, PUBLIC_PROFILE_COLUMNS_NO_PHOTO, type Profile } from "@/lib/types";
 import {
   dbMessage,
   fetchMyProfile,
@@ -20,12 +20,33 @@ import {
 } from "@/lib/coach/shared";
 
 /**
+ * Openbaar profiel van een groepslid (geen voedingsdoelen). Bestaat de kolom avatar_url nog niet
+ * (upgrade-avatars.sql niet gedraaid), dan opnieuw zonder profielfoto.
+ */
+async function fetchMemberProfile(sb: SupabaseClient, uid: string): Promise<Profile | null> {
+  const query = (cols: string) => sb.from("profiles").select(cols).eq("id", uid).maybeSingle();
+  let { data, error } = await query(PUBLIC_PROFILE_COLUMNS);
+  if (error && (error.code === "42703" || /does not exist|schema cache/i.test(error.message ?? ""))) {
+    ({ data, error } = await query(PUBLIC_PROFILE_COLUMNS_NO_PHOTO));
+  }
+  return (data as unknown as Profile | null) ?? null;
+}
+
+/**
  * Tools van de AI-coach. Ze gebruiken de Supabase-client van de ingelogde gebruiker,
  * dus Row Level Security bepaalt wat de coach mag lezen en schrijven.
  * De Nederlandse labels voor de chat staan in shared.ts (TOOL_LABELS), zodat de chat ze ook kent.
  */
 
-export type ToolContext = { sb: SupabaseClient; userId: string };
+export type ToolContext = {
+  sb: SupabaseClient;
+  userId: string;
+  /**
+   * De berichten van het gesprek tot nu toe (zoals ze naar de API gaan). Alleen nodig voor
+   * delete_template: dat controleert hiermee of de gebruiker het verwijderen echt heeft bevestigd.
+   */
+  history?: readonly unknown[];
+};
 
 type CoachTool<S extends z.ZodType> = {
   name: string;
@@ -45,7 +66,7 @@ const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Gebruik YYYY-MM-DD");
 const plannedExercise = z.object({
   slug: z.string().describe("Slug uit de oefeningenbibliotheek"),
   sets: z.number().int().min(1).max(20),
-  reps: z.string().max(20).describe('Bijv. "8-12" of "10"'),
+  reps: z.string().max(20).describe('Bijv. "8-12" of "10"; bij statische oefeningen (plank, wall sit) seconden, bijv. "30-60"'),
   notes: z.string().max(300).optional().describe("Korte uitvoeringstip voor deze oefening"),
 });
 
@@ -102,6 +123,216 @@ async function fetchAll<T>(
 /** Datum (YYYY-MM-DD) van `days` dagen geleden in Nederlandse tijd. */
 function daysAgo(days: number) {
   return new Date(Date.now() - days * 86400000).toLocaleDateString("sv-SE", { timeZone: "Europe/Amsterdam" });
+}
+
+// ───────── Schema's bewerken en verwijderen ─────────
+
+type StoredExercise = { slug: string; sets: number; reps: string; notes?: string };
+type TemplateRow = { id: string; name: string; owner_id: string; group_id: string | null; exercises: StoredExercise[] };
+
+/** Opslaan-vorm (zelfde als de app): sets 1-20, lege reps naar de standaard ("8-12", of "30-60" s), lege notities weg. */
+function cleanExercises(list: { slug: string; sets: number; reps: string; notes?: string | null }[]): StoredExercise[] {
+  return list.map(({ slug, sets, reps, notes }) => ({
+    slug,
+    sets: Math.max(1, Math.min(20, Math.round(Number(sets)) || 1)),
+    reps: String(reps ?? "").trim() || defaultTargetReps(slug),
+    ...(notes?.trim() && { notes: notes.trim() }),
+  }));
+}
+
+/** "Bench Press (bench-press) 3×8-12 – notitie" */
+function fmtExercise(e: StoredExercise) {
+  return `${EXERCISE_BY_SLUG[e.slug]?.name ?? e.slug} (${e.slug}) ${e.sets}×${e.reps}${e.notes ? ` – ${e.notes}` : ""}`;
+}
+
+const missingColumn = (error: { code?: string; message?: string } | null) =>
+  !!error && (error.code === "42703" || error.code === "PGRST204" || /group_id/.test(error.message ?? ""));
+
+/** Eén schema ophalen (RLS: eigen schema's en schema's die met een van je groepen gedeeld zijn). */
+async function fetchTemplateRow(sb: SupabaseClient, id: string): Promise<{ row: TemplateRow | null; error?: string }> {
+  let res = await sb.from("templates").select("id, name, owner_id, group_id, exercises").eq("id", id).maybeSingle();
+  // Zonder upgrade-planning.sql bestaat group_id nog niet: dan zonder.
+  if (missingColumn(res.error)) res = await sb.from("templates").select("id, name, owner_id, exercises").eq("id", id).maybeSingle();
+  if (res.error) return { row: null, error: dbMessage(res.error, "Schema ophalen") };
+  if (!res.data) return { row: null };
+  const d = res.data as Partial<TemplateRow>;
+  return {
+    row: {
+      id: d.id!,
+      name: d.name ?? "Schema",
+      owner_id: d.owner_id!,
+      group_id: d.group_id ?? null,
+      exercises: Array.isArray(d.exercises) ? d.exercises : [],
+    },
+  };
+}
+
+/** Groepen waarvan de gebruiker trainer is (voor "mag ik dit gedeelde schema bewerken"). */
+async function trainerGroupIds(sb: SupabaseClient, userId: string): Promise<Set<string>> {
+  const { data } = await sb.from("group_members").select("group_id").eq("user_id", userId).eq("role", "trainer");
+  return new Set((data ?? []).map((r) => r.group_id as string));
+}
+
+const NOT_FOUND = "Schema niet gevonden of geen toegang. Gebruik list_templates voor de juiste template_id.";
+
+/** Gerichte wijziging in een schema, zodat de coach niet het hele schema opnieuw hoeft te sturen. */
+const templateChange = z.object({
+  op: z
+    .enum(["replace", "remove", "add", "update", "move"])
+    .describe(
+      "replace: oefening `slug` vervangen door `new_slug` (sets/reps blijven, tenzij meegegeven; de oude notitie vervalt). " +
+        "remove: oefening `slug` weghalen. add: oefening `slug` toevoegen (met sets en reps; standaard achteraan, of op `position`). " +
+        "update: sets, reps en/of notes van oefening `slug` aanpassen. move: oefening `slug` naar `position` verplaatsen.",
+    ),
+  slug: z
+    .string()
+    .describe("Slug van de oefening zoals die nu in het schema staat (zie list_templates); bij add de slug van de nieuwe oefening"),
+  new_slug: z.string().optional().describe("Alleen bij replace: slug van de nieuwe oefening uit de bibliotheek"),
+  sets: z.number().int().min(1).max(20).optional(),
+  reps: z.string().max(20).optional().describe('Bijv. "8-12" of "10"; bij statische oefeningen (plank, wall sit) seconden, bijv. "30-60"'),
+  notes: z.string().max(300).optional().describe('Nieuwe uitvoeringstip; "" haalt de notitie weg'),
+  position: z.number().int().min(1).max(30).optional().describe("Plek in het schema, 1 = eerste oefening (bij add en move)"),
+});
+type TemplateChange = z.infer<typeof templateChange>;
+
+/** Past de wijzigingen op volgorde toe. Geeft de nieuwe lijst, of een foutmelding voor de coach. */
+function applyChanges(start: StoredExercise[], changes: TemplateChange[]): { list: StoredExercise[]; done: string[] } | { error: string } {
+  const list = start.map((e) => ({ ...e }));
+  const done: string[] = [];
+  const nameOf = (slug: string) => EXERCISE_BY_SLUG[slug]?.name ?? slug;
+  // Op slug zoeken; lukt dat niet, dan op naam (de coach geeft soms de naam in plaats van de slug).
+  const find = (key: string) => {
+    let i = list.findIndex((e) => e.slug === key);
+    if (i < 0) {
+      const k = key.trim().toLowerCase();
+      i = list.findIndex((e) => (EXERCISE_BY_SLUG[e.slug]?.name ?? "").toLowerCase() === k);
+    }
+    return i;
+  };
+  const missing = (key: string) => ({
+    error:
+      `De oefening "${key}" staat niet in dit schema. Huidige oefeningen: ` +
+      (list.length ? list.map((e) => `${nameOf(e.slug)} (${e.slug})`).join(", ") : "geen") +
+      ".",
+  });
+  const at = (position: number | undefined) => (position == null ? list.length : Math.min(list.length, position - 1));
+
+  for (const c of changes) {
+    if (c.op === "add") {
+      if (!EXERCISE_BY_SLUG[c.slug]) return { error: `Onbekende slug: ${c.slug}. Gebruik search_exercises.` };
+      const [item] = cleanExercises([{ slug: c.slug, sets: c.sets ?? 3, reps: c.reps ?? defaultTargetReps(c.slug), notes: c.notes }]);
+      list.splice(at(c.position), 0, item);
+      done.push(`${nameOf(c.slug)} toegevoegd`);
+      continue;
+    }
+    const i = find(c.slug);
+    if (i < 0) return missing(c.slug);
+    const cur = list[i];
+    if (c.op === "remove") {
+      list.splice(i, 1);
+      done.push(`${nameOf(cur.slug)} verwijderd`);
+    } else if (c.op === "replace") {
+      if (!c.new_slug) return { error: "Bij replace hoort new_slug (de nieuwe oefening)." };
+      if (!EXERCISE_BY_SLUG[c.new_slug]) return { error: `Onbekende slug: ${c.new_slug}. Gebruik search_exercises.` };
+      [list[i]] = cleanExercises([
+        { slug: c.new_slug, sets: c.sets ?? cur.sets, reps: c.reps ?? cur.reps, notes: c.notes },
+      ]);
+      done.push(`${nameOf(cur.slug)} vervangen door ${nameOf(c.new_slug)}`);
+    } else if (c.op === "update") {
+      if (c.sets == null && c.reps == null && c.notes == null) return { error: "Bij update hoort sets, reps en/of notes." };
+      [list[i]] = cleanExercises([
+        { slug: cur.slug, sets: c.sets ?? cur.sets, reps: c.reps ?? cur.reps, notes: c.notes ?? cur.notes },
+      ]);
+      done.push(`${nameOf(cur.slug)} aangepast naar ${list[i].sets}×${list[i].reps}`);
+    } else if (c.op === "move") {
+      if (c.position == null) return { error: "Bij move hoort position (1 = eerste oefening)." };
+      list.splice(i, 1);
+      list.splice(at(c.position), 0, cur);
+      done.push(`${nameOf(cur.slug)} verplaatst naar plek ${Math.min(c.position, list.length)}`);
+    }
+  }
+  return { list, done };
+}
+
+// ───────── Bevestiging voor verwijderen ─────────
+
+type HistoryBlock = { type?: string; text?: string; id?: string; name?: string; tool_use_id?: string; content?: unknown };
+type HistoryMessage = { role?: string; content?: unknown };
+
+const blocksOf = (m: HistoryMessage): HistoryBlock[] =>
+  typeof m.content === "string" ? [{ type: "text", text: m.content }] : Array.isArray(m.content) ? (m.content as HistoryBlock[]) : [];
+
+/** Een vraag van de gebruiker (geen bericht met alleen tool-resultaten). */
+const isUserText = (m: HistoryMessage) => m.role === "user" && blocksOf(m).some((b) => b.type === "text");
+
+/**
+ * Wat de gebruiker als laatste typte, en voor welke schema's het vorige antwoord om bevestiging vroeg
+ * (een delete_template-resultaat met needs_confirmation tussen de vorige en de laatste vraag).
+ */
+function deleteConfirmation(history: readonly unknown[] | undefined): { text: string; pending: Set<string> } {
+  const msgs = (history ?? []) as HistoryMessage[];
+  const pending = new Set<string>();
+  let last = -1;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (isUserText(msgs[i])) {
+      last = i;
+      break;
+    }
+  }
+  if (last < 0) return { text: "", pending };
+  const text = blocksOf(msgs[last])
+    .filter((b) => b.type === "text" && b.text && !b.text.startsWith("<context>"))
+    .map((b) => b.text)
+    .join("\n");
+  let prev = -1;
+  for (let i = last - 1; i >= 0; i--) {
+    if (isUserText(msgs[i])) {
+      prev = i;
+      break;
+    }
+  }
+  const asked = new Set<string>();
+  for (let i = prev + 1; i < last; i++) {
+    for (const b of blocksOf(msgs[i])) {
+      if (msgs[i].role === "assistant" && b.type === "tool_use" && b.name === "delete_template" && b.id) asked.add(b.id);
+      if (b.type === "tool_result" && b.tool_use_id && asked.has(b.tool_use_id) && typeof b.content === "string") {
+        try {
+          const r = JSON.parse(b.content) as { needs_confirmation?: boolean; template_id?: string };
+          if (r.needs_confirmation && typeof r.template_id === "string") pending.add(r.template_id);
+        } catch {
+          // geen JSON
+        }
+      }
+    }
+  }
+  return { text, pending };
+}
+
+const LETTER = "a-zà-ÿ";
+/** Woorden waarmee een duidelijk ja begint. */
+const YES_START = new RegExp(
+  `^(ja+|jawel|jazeker|jep|yep|yes|zeker|zeker weten|doe maar|doe het|ok|oke|oké|okay|akkoord|prima|graag|verwijder[${LETTER}]*|weg ermee|ga je gang|bevestig[${LETTER}]*)(?![${LETTER}])`,
+);
+/** Begint met een los "ja": een "niet" of "geen" verderop staat dan in een reden ("die gebruik ik niet meer"). */
+const JA_START = new RegExp(`^(ja+|jawel|jazeker|jep|yep|yes)(?![${LETTER}])`);
+/** Altijd nee, twijfel of een voorbehoud, waar het ook staat. */
+const ALWAYS_NO = new RegExp(
+  `(^|[^${LETTER}])(nee|neen|no|nope|stop|wacht|annuleer[${LETTER}]*|twijfel[${LETTER}]*|misschien|toch|eerst|behalve|tenzij|liever niet|niet doen|niet verwijderen|laat maar|laat (het|hem|die|dat|ze) (maar )?staan)(?![${LETTER}])`,
+);
+/** "maar" als voegwoord ("ja maar ...") is een voorbehoud; na een werkwoord of voornaamwoord ("doe maar", "verwijder hem maar") niet. */
+const BUT = new RegExp(`(^|[^${LETTER}])(?<!(doe|verwijder[${LETTER}]*|hem|het|die|dat|ze|ermee|weg|gerust|wel) )maar(?![${LETTER}])`);
+const NEGATION = new RegExp(`(^|[^${LETTER}])(niet|geen)(?![${LETTER}])`);
+
+/**
+ * Zegt de gebruiker duidelijk ja (en niet tegelijk nee, twijfel of een voorbehoud)? Het bericht moet
+ * met een bevestigend woord beginnen; een vraag ("?") of "maar", "eerst", "behalve" is geen duidelijk ja.
+ */
+function isClearYes(text: string) {
+  const t = text.toLowerCase().replace(/\s+/g, " ").trim();
+  if (!t || t.length > 300) return false;
+  if (t.includes("?") || ALWAYS_NO.test(t) || BUT.test(t)) return false;
+  if (!YES_START.test(t)) return false;
+  return JA_START.test(t) || !NEGATION.test(t);
 }
 
 function fmtSets(logs: { set_number: number; weight: number | null; reps: number | null }[]) {
@@ -399,7 +630,8 @@ export const TOOLS = [
     name: "get_strength_ranks",
     description:
       "Krachtranks (Brons, Zilver, Goud, Platina, Diamant, Elite, Olympiër) van de gebruiker of een groepslid: per oefening " +
-      "(geschatte 1RM of reps, en wat nodig is voor de volgende rang), per spiergroep en totaal. Gebaseerd op " +
+      "(geschatte 1RM, extra gewicht, reps, seconden bij statische houdingen of zwaarste set bij dragen/duwen, en wat nodig is " +
+      "voor de volgende rang), per spiergroep en totaal. Gebaseerd op " +
       "krachtstandaarden per oefening, geslacht en lichaamsgewicht.",
     schema: z.object({ user_id: z.string().uuid().optional() }),
     run: async ({ user_id }, { sb, userId }) => {
@@ -408,7 +640,7 @@ export const TOOLS = [
       const profile =
         uid === userId
           ? await fetchMyProfile(sb, userId)
-          : ((await sb.from("profiles").select(PUBLIC_PROFILE_COLUMNS).eq("id", uid).maybeSingle()).data as Profile | null);
+          : await fetchMemberProfile(sb, uid);
       if (!profile?.bodyweight_kg || !profile?.sex) {
         return { error: "Lichaamsgewicht en/of geslacht ontbreken in het profiel; zonder die gegevens zijn er geen ranks." };
       }
@@ -442,8 +674,8 @@ export const TOOLS = [
           exercise: EXERCISE_BY_SLUG[r.slug]?.name ?? r.slug,
           tier: r.tier.name,
           progress_to_next: `${Math.round(r.progress * 100)}%`,
-          best: r.unit === "reps" ? `${r.value} reps` : r.viaAdded ? `+${r.value} kg extra (1RM)` : `1RM ≈ ${r.value} kg`,
-          next_tier_at: r.nextAt == null ? null : r.unit === "reps" ? `${r.nextAt} reps` : `${Math.ceil(r.nextAt)} kg${r.viaAdded ? " extra" : " 1RM"}`,
+          best: formatRankBest(r),
+          next_tier_at: nextTierTarget(r)?.at ?? null,
         })),
       };
     },
@@ -607,12 +839,38 @@ export const TOOLS = [
 
   tool({
     name: "list_templates",
-    description: "De opgeslagen trainingsschema's (templates) van de gebruiker.",
+    description:
+      "De trainingsschema's (templates) van de gebruiker: eigen schema's en schema's die een trainer met een van zijn " +
+      "groepen deelt. Per schema: template_id, naam, mine (eigen schema), group_id (gedeeld met die groep, anders null), " +
+      "can_edit (mag aanpassen met update_template) en de oefeningen als \"Naam (slug) sets×reps – notitie\". " +
+      "Alleen eigen schema's (mine) kunnen worden verwijderd.",
     schema: z.object({}),
-    run: async (_input, { sb }) => {
-      const { data, error } = await sb.from("templates").select("id, name, exercises").order("created_at", { ascending: false });
-      if (error) return { error: dbMessage(error) };
-      return data;
+    run: async (_input, { sb, userId }) => {
+      let res: { data: unknown[] | null; error: { code?: string; message?: string } | null } = await sb
+        .from("templates")
+        .select("id, name, owner_id, group_id, exercises")
+        .order("created_at", { ascending: false });
+      if (missingColumn(res.error)) {
+        res = await sb.from("templates").select("id, name, owner_id, exercises").order("created_at", { ascending: false });
+      }
+      if (res.error) return { error: dbMessage(res.error) };
+      const rows = (res.data ?? []) as Partial<TemplateRow>[];
+      const trainerOf = rows.some((t) => t.owner_id !== userId && t.group_id) ? await trainerGroupIds(sb, userId) : new Set<string>();
+      return {
+        count: rows.length,
+        templates: rows.map((t) => {
+          const mine = t.owner_id === userId;
+          const group_id = t.group_id ?? null;
+          return {
+            template_id: t.id,
+            name: t.name,
+            mine,
+            group_id,
+            can_edit: mine || (!!group_id && trainerOf.has(group_id)),
+            exercises: (Array.isArray(t.exercises) ? t.exercises : []).map(fmtExercise),
+          };
+        }),
+      };
     },
   }),
 
@@ -660,6 +918,145 @@ export const TOOLS = [
       const { data, error } = await sb.from("templates").insert({ name, exercises }).select("id").single();
       if (error) return { error: dbMessage(error) };
       return { ok: true, template_id: data.id, link: `/templates/${data.id}`, name, exercise_count: exercises.length };
+    },
+  }),
+
+  tool({
+    name: "update_template",
+    description:
+      "Pas een bestaand schema aan (alleen als can_edit in list_templates true is). Haal eerst de template_id en de " +
+      "huidige oefeningen op met list_templates. Gebruik bij kleine wijzigingen `changes` (bijv. één oefening vervangen, " +
+      "toevoegen of weghalen, of sets/reps aanpassen); de rest van het schema blijft dan precies zoals het was. Gebruik " +
+      "`exercises` alleen om het hele schema te vervangen (dan moet je alle oefeningen meesturen, ook die gelijk blijven). " +
+      "Gebruik bij grotere wijzigingen eerst analyze_plan met het nieuwe schema.",
+    schema: z.object({
+      template_id: z.string().uuid(),
+      name: z.string().min(1).max(80).optional().describe("Nieuwe naam (alleen bij hernoemen)"),
+      changes: z.array(templateChange).min(1).max(20).optional().describe("Gerichte wijzigingen, op volgorde toegepast"),
+      exercises: z
+        .array(plannedExercise)
+        .min(1)
+        .max(30)
+        .optional()
+        .describe("Volledige nieuwe oefeningenlijst; vervangt het hele schema. Niet samen met changes gebruiken."),
+    }),
+    run: async ({ template_id, name, changes, exercises }, { sb, userId }) => {
+      if (!name && !changes && !exercises) return { error: "Geef een nieuwe naam, changes of exercises mee." };
+      if (changes && exercises) return { error: "Gebruik changes of exercises, niet allebei." };
+      if (exercises) {
+        const bad = unknownSlugs(exercises.map((e) => e.slug));
+        if (bad.length) return { error: `Onbekende slugs: ${bad.join(", ")}` };
+      }
+      const { row, error: fetchError } = await fetchTemplateRow(sb, template_id);
+      if (fetchError) return { error: fetchError };
+      if (!row) return { error: NOT_FOUND };
+      if (row.owner_id !== userId && !(row.group_id && (await trainerGroupIds(sb, userId)).has(row.group_id))) {
+        return {
+          error:
+            "Dit schema is door een trainer met je groep gedeeld; alleen de eigenaar of een trainer van die groep kan het " +
+            "aanpassen. Bied aan om een eigen kopie op te slaan (save_template) en die aan te passen.",
+        };
+      }
+
+      let next = cleanExercises(row.exercises);
+      let applied: string[] = [];
+      if (exercises) {
+        next = cleanExercises(exercises);
+        applied = ["Oefeningen vervangen"];
+      } else if (changes) {
+        const r = applyChanges(next, changes);
+        if ("error" in r) return { error: `${r.error} Er is niets gewijzigd.` };
+        next = r.list;
+        applied = r.done;
+      }
+      if (!next.length) return { error: "Een schema heeft minstens één oefening nodig. Er is niets gewijzigd." };
+      if (next.length > 30) return { error: "Een schema kan maximaal 30 oefeningen hebben. Er is niets gewijzigd." };
+      const newName = name?.trim() || row.name;
+      if (newName !== row.name) applied.unshift(`Naam gewijzigd in "${newName}"`);
+
+      const base = {
+        ok: true,
+        updated: true,
+        template_id,
+        link: `/templates/${template_id}`,
+        name: newName,
+        exercise_count: next.length,
+        exercises: next.map(fmtExercise),
+      };
+      const unchanged = newName === row.name && JSON.stringify(next) === JSON.stringify(cleanExercises(row.exercises));
+      if (unchanged) return { ...base, changes: [], note: "Het schema was al zo; er is niets gewijzigd." };
+
+      const { data, error } = await sb
+        .from("templates")
+        .update({ name: newName, exercises: next })
+        .eq("id", template_id)
+        .select("id")
+        .maybeSingle();
+      if (error) {
+        return {
+          error:
+            error.code === "42501" || /row-level security|permission denied/i.test(error.message ?? "")
+              ? "Je mag dit schema niet aanpassen; alleen de eigenaar of een trainer van de groep waarmee het gedeeld is."
+              : dbMessage(error, "Schema bijwerken"),
+        };
+      }
+      if (!data) return { error: "Je mag dit schema niet aanpassen (of het bestaat niet meer). Er is niets gewijzigd." };
+      return { ...base, changes: applied };
+    },
+  }),
+
+  tool({
+    name: "delete_template",
+    description:
+      "Verwijder een eigen schema (alleen als mine in list_templates true is). Twee stappen: roep dit eerst aan met " +
+      "confirmed=false; er wordt dan niets verwijderd en je krijgt needs_confirmation terug. Vraag de gebruiker dan " +
+      "\"Weet je zeker dat je schema <naam> wilt verwijderen?\" en roep het pas opnieuw aan met confirmed=true als de " +
+      "gebruiker daar in zijn volgende bericht duidelijk ja op zegt. Nooit confirmed=true in dezelfde beurt als de vraag.",
+    schema: z.object({
+      template_id: z.string().uuid(),
+      confirmed: z.boolean().describe("true alleen nadat de gebruiker de vraag om bevestiging duidelijk met ja heeft beantwoord"),
+    }),
+    run: async ({ template_id, confirmed }, { sb, userId, history }) => {
+      const check = deleteConfirmation(history);
+      const askedBefore = check.pending.has(template_id);
+      const { row, error: fetchError } = await fetchTemplateRow(sb, template_id);
+      if (fetchError) return { error: fetchError };
+      if (!row) {
+        // Idempotent: na een bevestigde verwijdering (of een tweede aanroep) is het schema al weg.
+        if (confirmed && askedBefore) {
+          return { ok: true, deleted: true, already_deleted: true, template_id, note: "Dit schema was al verwijderd." };
+        }
+        return { error: NOT_FOUND };
+      }
+      if (row.owner_id !== userId) {
+        return {
+          error:
+            "Alleen de eigenaar kan dit schema verwijderen. Het is door een trainer met je groep gedeeld; de gebruiker kan " +
+            "het niet zelf weghalen.",
+        };
+      }
+      const exercise_count = row.exercises.length;
+      if (!confirmed || !askedBefore || !isClearYes(check.text)) {
+        return {
+          needs_confirmation: true,
+          template_id,
+          name: row.name,
+          exercise_count,
+          note:
+            `Er is niets verwijderd. Vraag de gebruiker: "Weet je zeker dat je schema ${row.name} wilt verwijderen?" ` +
+            "Roep delete_template pas opnieuw aan met confirmed=true als de gebruiker daar in zijn volgende bericht duidelijk ja op zegt.",
+        };
+      }
+      const { data, error } = await sb.from("templates").delete().eq("id", template_id).eq("owner_id", userId).select("id");
+      if (error) return { error: dbMessage(error, "Verwijderen") };
+      return {
+        ok: true,
+        deleted: true,
+        template_id,
+        name: row.name,
+        exercise_count,
+        ...(!data?.length && { already_deleted: true, note: "Dit schema was al verwijderd." }),
+      };
     },
   }),
 

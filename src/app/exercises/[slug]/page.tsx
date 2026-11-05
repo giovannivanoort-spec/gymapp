@@ -20,9 +20,9 @@ import { alternativesFor } from "@/lib/analysis";
 import { setCached } from "@/lib/cache";
 import { ageFrom, formatDate } from "@/lib/dates";
 import { EQUIPMENT_LABEL } from "@/lib/exercise-types";
-import { EXERCISE_BY_SLUG } from "@/lib/exercises";
+import { EXERCISE_BY_SLUG, isTimed } from "@/lib/exercises";
 import { formatSet, nl, sessionsBySlug, useHistoryState, type Session } from "@/lib/history";
-import { rankExercise, tierLadder, type ExerciseRank } from "@/lib/ranks";
+import { assistedCeiling, assistedScore, isAssisted, isLoadScored, rankExercise, standardInfo, tierLadder, type ExerciseRank } from "@/lib/ranks";
 import { errorMessage, supabase } from "@/lib/supabase";
 import { parseYouTubeId, youtubeSearchUrl } from "@/lib/youtube";
 
@@ -277,10 +277,14 @@ export default function ExerciseDetailPage() {
                 <div className="flex items-center justify-between gap-3 rounded-xl bg-surface-2 px-3 py-2.5">
                   <div className="min-w-0">
                     <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">Beste set</p>
-                    <p className="font-bold tabular-nums">{formatSet(best.bestSet)}</p>
+                    <p className="font-bold tabular-nums">
+                      {isAssisted(slug) && best.bestSet.weight
+                        ? `${nl(best.bestSet.weight)} kg ondersteuning × ${best.bestSet.reps ?? "–"}`
+                        : formatSet(best.bestSet)}
+                    </p>
                   </div>
                   <div className="shrink-0 text-right text-xs text-muted">
-                    {best.best1RM != null && <p className="tabular-nums">ca. {nl(best.best1RM)} kg 1RM</p>}
+                    {best.best1RM != null && !isLoadScored(slug) && <p className="tabular-nums">ca. {nl(best.best1RM)} kg 1RM</p>}
                     <p>{formatDate(best.date, { month: "short" })}</p>
                   </div>
                 </div>
@@ -333,9 +337,18 @@ export default function ExerciseDetailPage() {
   );
 }
 
-/** Sessie met de hoogste geschatte 1RM (zelfde berekening als de ranks), anders die met de meeste reps. */
+/**
+ * Sessie met de hoogste geschatte 1RM (zelfde berekening als de ranks), anders die met de meeste reps.
+ * Assisted machine: de sessie met de minste ondersteuning (bij gelijke hulp de meeste reps).
+ */
 function bestSession(sessions: Session[] | undefined): Session | null {
   if (!sessions?.length) return null;
+  if (isAssisted(sessions[0].sets[0]?.slug)) {
+    const score = (s: Session) => assistedScore(s.bestSet.weight, s.bestSet.reps) ?? 0;
+    return sessions.reduce((a, b) => (score(b) > score(a) ? b : a));
+  }
+  // Dragen/duwen: de rang gaat op het zwaarste gewicht, dus ook hier de sessie met het zwaarste gewicht.
+  if (isLoadScored(sessions[0].sets[0]?.slug)) return sessions.reduce((a, b) => (heaviest(b) > heaviest(a) ? b : a));
   const withE = sessions.filter((s) => s.best1RM != null);
   if (withE.length) return withE.reduce((a, b) => (b.best1RM! > a.best1RM! ? b : a));
   return sessions.reduce((a, b) => (b.maxReps > a.maxReps ? b : a));
@@ -347,7 +360,13 @@ function bestSession(sessions: Session[] | undefined): Session | null {
  */
 function progressPoints(sessions: Session[] | undefined): { points: ChartPoint[]; unit: string; title: string } | null {
   if (!sessions || sessions.length < 2) return null;
+  // Assisted machine: gewicht is ondersteuning; een 1RM- of reps-lijn zou de verkeerde kant op wijzen.
+  if (isAssisted(sessions[0].sets[0]?.slug)) return null;
   const chrono = [...sessions].reverse();
+  if (isLoadScored(chrono[0].sets[0]?.slug)) {
+    const points = prPoints(chrono, heaviest, (s) => s.sets.reduce((a, b) => ((b.weight ?? 0) > (a.weight ?? 0) ? b : a)));
+    return points.length < 2 ? null : { points, unit: "kg", title: "Zwaarste set" };
+  }
   const weighted = chrono.some((s) => s.best1RM != null);
   let top = -Infinity;
   const points: ChartPoint[] = [];
@@ -359,9 +378,51 @@ function progressPoints(sessions: Session[] | undefined): { points: ChartPoint[]
     points.push({ date: s.date, value, detail: formatSet(s.bestSet), pr: pr && points.length > 0 });
   }
   if (points.length < 2) return null;
-  return weighted
-    ? { points, unit: "kg", title: "Geschatte 1RM" }
-    : { points, unit: "reps", title: "Meeste reps in een set" };
+  if (weighted) return { points, unit: "kg", title: "Geschatte 1RM" };
+  return isTimed(chrono[0].sets[0]?.slug) ? { points, unit: "s", title: "Langste set" } : { points, unit: "reps", title: "Meeste reps in een set" };
+}
+
+/** Zwaarste gewicht van een set met reps in deze sessie (0 als er geen is). */
+function heaviest(s: Session): number {
+  return Math.max(0, ...s.sets.filter((x) => (x.reps ?? 0) > 0).map((x) => x.weight ?? 0));
+}
+
+/** Grafiekpunten (oud → nieuw) met records gemarkeerd. */
+function prPoints(chrono: Session[], valueOf: (s: Session) => number | null, setOf: (s: Session) => Session["bestSet"]): ChartPoint[] {
+  let top = -Infinity;
+  const points: ChartPoint[] = [];
+  for (const s of chrono) {
+    const value = valueOf(s);
+    if (value == null || value <= 0) continue;
+    const pr = value > top;
+    if (pr) top = value;
+    points.push({ date: s.date, value, detail: formatSet(setOf(s)), pr: pr && points.length > 0 });
+  }
+  return points;
+}
+
+/** Wat de getallen in de tier-ladder betekenen: "(1RM, per dumbbell)", "(reps)", "(seconden)". */
+function ladderMeasure(ladder: NonNullable<ReturnType<typeof tierLadder>>, equipment: string): string {
+  const perDumbbell = equipment === "dumbbell" || equipment === "kettlebell" ? ", per dumbbell" : "";
+  if (ladder.unit === "reps") return "(reps)";
+  if (ladder.unit === "seconds") return "(seconden)";
+  if (ladder.scoring === "load") return `(zwaarste set${equipment === "dumbbell" ? ", per dumbbell" : ""})`;
+  if (ladder.scoring === "assisted") return "(1RM van lichaamsgewicht min ondersteuning)";
+  return `(1RM${perDumbbell})`;
+}
+
+/** Eerlijke vermelding bij een afgeleide of geschatte standaard (geen gemeten StrengthLevel-data). */
+function EstimateNote({ slug }: { slug: string }) {
+  const info = standardInfo(slug);
+  if (!info?.estimated) return null;
+  const basedOn = info.basedOn ? (EXERCISE_BY_SLUG[info.basedOn]?.name ?? info.basedOn) : null;
+  return (
+    <p className="mt-2 text-[11px] text-muted">
+      {basedOn
+        ? `Geschatte standaard op basis van ${basedOn}.`
+        : "Geschatte standaard: voor deze oefening zijn geen gemeten krachtstandaarden, dit is een schatting van gangbare niveaus."}
+    </p>
+  );
 }
 
 function RankSection({
@@ -427,12 +488,18 @@ function RankSection({
             ? describeRank(rank)
             : rank === undefined
               ? "Je rang wordt berekend uit je gelogde sets."
-              : "Log een set (maximaal 12 reps) om je rang te krijgen."}
+              : ladder?.unit === "seconds"
+                ? "Log een set (aantal seconden) om je rang te krijgen."
+                : ladder?.scoring === "load"
+                  ? "Log een set met gewicht om je rang te krijgen."
+                  : ladder?.scoring === "assisted"
+                    ? "Log een set (gewicht = ondersteuning) om je rang te krijgen."
+                    : `Log een set (maximaal ${ladder?.maxReps ?? 12} reps) om je rang te krijgen.`}
       </p>
       {ladder && (
         <div>
           <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
-            Nodig bij {bodyweight} kg{age != null ? `, ${age} jaar` : ""} {ladder.unit === "kg" ? `(1RM${equipment === "dumbbell" || equipment === "kettlebell" ? ", per dumbbell" : ""})` : "(reps)"}
+            Nodig bij {bodyweight} kg{age != null ? `, ${age} jaar` : ""} {ladderMeasure(ladder, equipment)}
           </p>
           <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-6">
             {ladder.steps.map((s, i) => (
@@ -443,11 +510,17 @@ function RankSection({
                 <RankBadge tierIndex={i + 1} size={26} className={rank && rank.tierIndex >= i + 1 ? "" : "opacity-40"} />
                 <span className="text-[11px] font-semibold tabular-nums">
                   {s.at}
-                  {ladder.unit === "kg" ? " kg" : ""}
+                  {ladder.unit === "kg" ? " kg" : ladder.unit === "seconds" ? " s" : ""}
                 </span>
               </div>
             ))}
           </div>
+          {ladder.scoring === "assisted" && ladder.steps.some((s) => s.at > assistedCeiling(bodyweight)) && (
+            <p className="mt-2 text-[11px] text-muted">
+              Op de machine tellen hooguit 12 reps zonder ondersteuning. Hogere tiers haal je met gewone of weighted pull-ups.
+            </p>
+          )}
+          <EstimateNote slug={slug} />
         </div>
       )}
     </section>

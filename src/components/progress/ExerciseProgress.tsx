@@ -5,6 +5,7 @@ import { forwardRef, useMemo, useState } from "react";
 import { ChevronRightIcon } from "@/components/Icons";
 import { filterRange, LineChart, RANGES, rangesAvailable, type ChartPoint, type RangeId } from "@/components/LineChart";
 import { formatDate } from "@/lib/dates";
+import { isTimed } from "@/lib/exercises";
 import { formatSet, nl, type HistorySet, type Session } from "@/lib/history";
 import { exerciseName, groupExercises, isWeighted } from "@/lib/progress/records";
 
@@ -12,12 +13,20 @@ const PAGE = 8;
 
 type Metric = "1rm" | "weight" | "volume" | "reps" | "total";
 
-const METRICS: Record<Metric, { label: string; long: string; unit: "kg" | "reps" }> = {
+type MetricMeta = { label: string; long: string; unit: "kg" | "reps" | "s" };
+
+const METRICS: Record<Metric, MetricMeta> = {
   "1rm": { label: "1RM", long: "Geschatte 1RM", unit: "kg" },
   weight: { label: "Zwaarste set", long: "Zwaarste set", unit: "kg" },
   volume: { label: "Volume", long: "Volume (kg × reps)", unit: "kg" },
   reps: { label: "Meeste reps", long: "Meeste reps in één set", unit: "reps" },
   total: { label: "Totaal reps", long: "Totaal reps", unit: "reps" },
+};
+
+/** Statische oefeningen (plank): de reps zijn seconden. */
+const TIMED_METRICS: Partial<Record<Metric, MetricMeta>> = {
+  reps: { label: "Langste set", long: "Langste set", unit: "s" },
+  total: { label: "Totaal tijd", long: "Totale tijd", unit: "s" },
 };
 
 const WEIGHTED_METRICS: Metric[] = ["1rm", "weight", "volume"];
@@ -70,7 +79,7 @@ export const ExerciseProgress = forwardRef<
   const groups = useMemo(() => groupExercises(options), [options]);
   const metricOptions = weighted ? WEIGHTED_METRICS : REPS_METRICS;
   const metric: Metric = metricOptions.includes(metricChoice) ? metricChoice : metricOptions[0];
-  const meta = METRICS[metric];
+  const meta = (isTimed(slug) && TIMED_METRICS[metric]) || METRICS[metric];
   const unit = meta.unit;
 
   const points: ChartPoint[] = useMemo(() => {
@@ -156,7 +165,7 @@ export const ExerciseProgress = forwardRef<
                 metric === m ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink"
               }`}
             >
-              {METRICS[m].label}
+              {((isTimed(slug) && TIMED_METRICS[m]) || METRICS[m]).label}
             </button>
           ))}
         </div>

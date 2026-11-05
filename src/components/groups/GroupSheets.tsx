@@ -59,7 +59,7 @@ export function MemberSheet({
     <Sheet open onClose={busy ? () => {} : onClose} title={name}>
       <div className="space-y-4">
         <div className="flex items-center gap-3">
-          <Avatar id={member.user_id} name={name} size={48} />
+          <Avatar id={member.user_id} name={name} src={member.profiles?.avatar_url} size={48} />
           <div className="min-w-0">
             <p className="truncate font-semibold">{name}</p>
             <p className={`text-sm ${isTrainer ? "text-accent" : "text-muted"}`}>{isTrainer ? "Trainer" : "Lid"}</p>
@@ -212,7 +212,7 @@ export function LeaveSheet({
                     selected ? "border-accent bg-accent/10" : "border-line bg-surface-2 hover:border-muted"
                   }`}
                 >
-                  <Avatar id={m.user_id} name={memberName(m)} size={32} />
+                  <Avatar id={m.user_id} name={memberName(m)} src={m.profiles?.avatar_url} size={32} />
                   <span className="min-w-0 flex-1 truncate text-sm font-medium">{memberName(m)}</span>
                   <span
                     className={`h-4 w-4 shrink-0 rounded-full border-2 ${selected ? "border-accent bg-accent" : "border-line"}`}

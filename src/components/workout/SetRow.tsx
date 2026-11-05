@@ -28,6 +28,7 @@ export function SetRow({
   personName,
   isRecord,
   readOnly,
+  timed,
   onSave,
   onDelete,
   onUncomplete,
@@ -48,6 +49,8 @@ export function SetRow({
   /** Deze set is beter dan alles daarvoor. */
   isRecord?: boolean;
   readOnly?: boolean;
+  /** Statische oefening: het tweede veld is seconden in plaats van reps. */
+  timed?: boolean;
   onSave: (weight: string, reps: string) => Promise<SaveResult>;
   onDelete: () => void;
   /** Afvinken ongedaan maken (de getallen blijven in de velden staan). Zonder: wissen. */
@@ -151,16 +154,16 @@ export function SetRow({
   const prevCell = showPrev ? (
     readOnly || !prevText ? (
       <span className="text-center text-[11px] leading-tight tabular-nums text-muted">
-        {prevText ? <PrevValue v={prevText} /> : "–"}
+        {prevText ? <PrevValue v={prevText} timed={timed} /> : "–"}
       </span>
     ) : (
       <button
         type="button"
         onClick={takePrev}
         className="flex min-h-11 flex-col items-center justify-center rounded-lg text-[11px] leading-tight tabular-nums text-muted transition hover:bg-surface-2 hover:text-ink active:scale-95"
-        aria-label={`Vorige keer set ${setNumber}: ${describe(prevText)}. Overnemen`}
+        aria-label={`Vorige keer set ${setNumber}: ${describe(prevText, timed)}. Overnemen`}
       >
-        <PrevValue v={prevText} />
+        <PrevValue v={prevText} timed={timed} />
       </button>
     )
   ) : null;
@@ -235,7 +238,7 @@ export function SetRow({
             (e.target as HTMLInputElement).blur();
           }
         }}
-        aria-label={`Reps set ${setNumber} ${exerciseName}${who}`}
+        aria-label={`${timed ? "Seconden" : "Reps"} set ${setNumber} ${exerciseName}${who}`}
         aria-invalid={status === "error" || undefined}
       />
       <button
@@ -280,18 +283,18 @@ export function SetRow({
   );
 }
 
-function describe(v: Value) {
+function describe(v: Value, timed?: boolean) {
   const w = v.weight != null && Number(v.weight) !== 0 ? `${fmtNum(v.weight)} kilo` : "";
-  const r = v.reps != null ? `${v.reps} reps` : "";
+  const r = v.reps != null ? `${v.reps} ${timed ? "seconden" : "reps"}` : "";
   return [w, r].filter(Boolean).join(" bij ") || "niets";
 }
 
-function PrevValue({ v }: { v: Value }) {
+function PrevValue({ v, timed }: { v: Value; timed?: boolean }) {
   const w = v.weight != null && Number(v.weight) !== 0 ? fmtNum(v.weight) : null;
   return (
     <>
       <span className="block">{w ?? (v.reps != null ? v.reps : "–")}</span>
-      <span className="block text-muted/80">{w ? (v.reps != null ? `× ${v.reps}` : "") : "reps"}</span>
+      <span className="block text-muted/80">{w ? (v.reps != null ? `× ${v.reps}${timed ? " s" : ""}` : "") : timed ? "s" : "reps"}</span>
     </>
   );
 }

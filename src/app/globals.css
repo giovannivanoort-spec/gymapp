@@ -35,6 +35,42 @@ html {
   -webkit-tap-highlight-color: transparent;
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+  /* Dunne, donkere scrollbalk in de stijl van de app (desktop); op telefoons zweeft hij al. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-line);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-muted);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-button,
+::-webkit-scrollbar-corner {
+  display: none;
+}
+
+/*
+ * Horizontale rijen (chips, vrienden, weekstrip) scrollen met vinger, trackpad of shift+scroll;
+ * een balk eronder past niet bij de rest, dus die verbergen we.
+ */
+.overflow-x-auto {
+  scrollbar-width: none;
+}
+.overflow-x-auto::-webkit-scrollbar {
+  display: none;
 }
 
 ::selection {

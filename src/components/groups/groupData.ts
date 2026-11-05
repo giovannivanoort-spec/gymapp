@@ -5,8 +5,8 @@ import { useUserId } from "@/components/AuthProvider";
 import { fetchCached, forgetPersisted, getCached, invalidate, removeCached, setCached, useCached, useCachedError } from "@/lib/cache";
 import { toISODate } from "@/lib/dates";
 import { invalidateMyGroups, myGroupsKey, type MyGroup } from "@/lib/groups";
-import { supabase } from "@/lib/supabase";
-import { PUBLIC_PROFILE_COLUMNS, type Group, type GroupMember, type Workout } from "@/lib/types";
+import { isMissingSchemaError, supabase } from "@/lib/supabase";
+import { PUBLIC_PROFILE_COLUMNS, PUBLIC_PROFILE_COLUMNS_NO_PHOTO, type Group, type GroupMember, type Workout } from "@/lib/types";
 import { addDays } from "@/lib/week";
 
 /** Eén plek voor de (nieuwe) naam van de app in deelteksten. */
@@ -148,11 +148,18 @@ async function fetchWindow(groupId: string, today: string) {
   return (data ?? []) as { id: string; date: string }[];
 }
 
+/** Leden met openbaar profiel; zonder profielfoto als upgrade-avatars.sql nog niet is gedraaid. */
+async function fetchGroupMembers(id: string) {
+  const query = (cols: string) => supabase.from("group_members").select(`*, profiles(${cols})`).eq("group_id", id).order("joined_at");
+  const res = await query(PUBLIC_PROFILE_COLUMNS);
+  return res.error && isMissingSchemaError(res.error) ? query(PUBLIC_PROFILE_COLUMNS_NO_PHOTO) : res;
+}
+
 export async function fetchGroupData(id: string): Promise<GroupData> {
   const today = toISODate();
   const [g, m, up, past, win, me] = await Promise.all([
     supabase.from("groups").select("*").eq("id", id).single(),
-    supabase.from("group_members").select(`*, profiles(${PUBLIC_PROFILE_COLUMNS})`).eq("group_id", id).order("joined_at"),
+    fetchGroupMembers(id),
     supabase
       .from("workouts")
       .select("*, workout_exercises(count)")
@@ -175,7 +182,7 @@ export async function fetchGroupData(id: string): Promise<GroupData> {
   }
   if (m.error || up.error || !past || !win) throw networkError();
 
-  const members = (m.data as GroupMember[]) ?? [];
+  const members = (m.data as unknown as GroupMember[] | null) ?? [];
   // De groepsrij is ook leesbaar voor wie hem ooit maakte. Wie geen lid (meer) is, krijgt
   // "niet gevonden" in plaats van een lege groep zonder leden en trainingen.
   if (me && !members.some((x) => x.user_id === me)) {

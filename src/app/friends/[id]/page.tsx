@@ -18,7 +18,7 @@ import { toast } from "@/components/ui/Toast";
 import { WeekGoal } from "@/components/WeekGoal";
 import { fetchCached, useCached } from "@/lib/cache";
 import { formatDate, relativeDay, toISODate } from "@/lib/dates";
-import { EXERCISE_BY_SLUG } from "@/lib/exercises";
+import { EXERCISE_BY_SLUG, isTimed } from "@/lib/exercises";
 import {
   daysAgo,
   friendErrorMessage,
@@ -155,7 +155,7 @@ export default function FriendPage() {
         </div>
       ) : person === null || person.id === me ? (
         <div className="card animate-fade-up flex flex-col items-center gap-3 px-6 py-8 text-center">
-          {person && <Avatar id={person.id} name={person.display_name} size={56} />}
+          {person && <Avatar id={person.id} name={person.display_name} src={person.avatar_url} size={56} />}
           <p className="text-sm text-muted">{person ? "Dit is je eigen profiel." : "Dit profiel bestaat niet (meer)."}</p>
           <Link href={person ? "/profile" : "/friends"} className="btn-ghost w-full">
             {person ? "Naar je profiel" : "Naar vrienden"}
@@ -177,7 +177,7 @@ export default function FriendPage() {
               />
             )}
             <div className="relative flex items-center gap-4 p-4">
-              <Avatar id={person.id} name={name} size={68} ring={them?.overall?.tier.from} />
+              <Avatar id={person.id} name={name} src={person.avatar_url} size={68} ring={them?.overall?.tier.from} />
               <div className="min-w-0 flex-1">
                 <h2 className="truncate text-xl font-extrabold">{name}</h2>
                 <p className="text-sm text-muted">
@@ -367,7 +367,7 @@ function PrRow({ pr, index }: { pr: PersonalRecord; index: number }) {
       </div>
       <div className="shrink-0 text-right">
         <p className="text-sm font-bold tabular-nums text-accent">
-          +{pr.unit === "kg" ? `${nl(delta)} kg` : `${delta} ${delta === 1 ? "rep" : "reps"}`}
+          +{pr.unit === "kg" ? `${nl(delta)} kg` : isTimed(pr.slug) ? `${delta} s` : `${delta} ${delta === 1 ? "rep" : "reps"}`}
         </p>
         <p className="text-[11px] text-muted">{relativeDay(pr.date)}</p>
       </div>
@@ -475,7 +475,7 @@ function best(sessions: Session[]): Best {
     return { value: top.best1RM!, unit: "kg", label: formatSet(top.bestSet) };
   }
   const top = sessions.reduce((a, b) => (b.maxReps > a.maxReps ? b : a));
-  return { value: top.maxReps, unit: "reps", label: `${top.maxReps} reps` };
+  return { value: top.maxReps, unit: "reps", label: `${top.maxReps} ${isTimed(top.bestSet.slug) ? "s" : "reps"}` };
 }
 
 /** Oefeningen die jullie allebei gedaan hebben, met de beste prestatie van ieder. */
@@ -536,7 +536,8 @@ function CompareRow({ c, index, onOpen }: { c: Comparison; index: number; onOpen
   const iWin = c.me.value > c.them.value;
   const tie = c.me.value === c.them.value;
   const theyWin = !iWin && !tie;
-  const fmt = (b: Best) => (b.unit === "kg" ? `${nl(b.value)} kg` : `${b.value}`);
+  const timed = isTimed(c.slug);
+  const fmt = (b: Best) => (b.unit === "kg" ? `${nl(b.value)} kg` : timed ? `${b.value} s` : `${b.value}`);
   return (
     <button
       type="button"
@@ -548,7 +549,7 @@ function CompareRow({ c, index, onOpen }: { c: Comparison; index: number; onOpen
       <div className="flex items-baseline justify-between gap-2">
         <p className="truncate text-sm font-semibold">{ex?.name ?? c.slug}</p>
         <span className="flex shrink-0 items-center gap-1 text-[11px] text-muted">
-          {c.me.unit === "kg" ? "geschatte 1RM" : "max reps"}
+          {c.me.unit === "kg" ? "geschatte 1RM" : timed ? "langste set" : "max reps"}
           <ChevronRightIcon size={12} />
         </span>
       </div>
@@ -614,11 +615,12 @@ function DaySets({ day, history }: { day: string; history: HistorySet[] }) {
 /** Uitgebreide vergelijking van één oefening: verloop over tijd en de stand. */
 function DuelDetail({ c, firstName }: { c: Comparison; firstName: string }) {
   const unit = c.me.unit;
-  const fmt = (v: number) => (unit === "kg" ? `${nl(v)} kg` : `${v} reps`);
+  const timed = isTimed(c.slug);
+  const fmt = (v: number) => (unit === "kg" ? `${nl(v)} kg` : timed ? `${v} s` : `${v} reps`);
   const diff = Math.round((c.me.value - c.them.value) * 10) / 10;
   const lastMine = c.mySeries.at(-1);
   const lastTheirs = c.theirSeries.at(-1);
-  const what = unit === "kg" ? "geschatte 1RM" : "max reps";
+  const what = unit === "kg" ? "geschatte 1RM" : timed ? "langste set" : "max reps";
   const verdict =
     diff === 0
       ? `Jullie staan gelijk op ${fmt(c.me.value)} ${what}.`
@@ -633,7 +635,7 @@ function DuelDetail({ c, firstName }: { c: Comparison; firstName: string }) {
       >
         {verdict}
       </p>
-      <DuelChart mine={c.mySeries} theirs={c.theirSeries} unit={unit} rivalName={firstName} rivalColor={RIVAL} />
+      <DuelChart mine={c.mySeries} theirs={c.theirSeries} unit={unit} timed={timed} rivalName={firstName} rivalColor={RIVAL} />
       <div className="grid grid-cols-2 gap-2">
         <DuelStat
           who="Jij"
@@ -856,7 +858,7 @@ function NonFriend({
     <div className="space-y-3">
       <div className="card animate-scale-in relative flex flex-col items-center gap-4 overflow-hidden px-6 py-8 text-center">
         <div className="pointer-events-none absolute left-1/2 top-0 h-40 w-40 -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent/10 blur-3xl" />
-        <Avatar id={person.id} name={person.display_name} size={72} className="relative" />
+        <Avatar id={person.id} name={person.display_name} src={person.avatar_url} size={72} className="relative" />
         <div className="relative">
           <h2 className="text-xl font-extrabold">{person.display_name}</h2>
           {outgoing && (
