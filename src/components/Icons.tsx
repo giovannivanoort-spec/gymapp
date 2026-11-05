@@ -82,3 +82,42 @@ export const DumbbellIcon = (p: Props) => (
     <path d="M6.5 6.5v11M17.5 6.5v11M3 9v6M21 9v6M6.5 12h11" />
   </Svg>
 );
+export const UsersIcon = (p: Props) => (
+  <Svg {...p}>
+    <circle cx="9" cy="8" r="3.5" />
+    <path d="M2.5 20c0-3.6 2.9-5.5 6.5-5.5s6.5 1.9 6.5 5.5M16 4.6a3.5 3.5 0 010 6.8M18 14.8c2.2.6 3.5 2.3 3.5 5.2" />
+  </Svg>
+);
+export const UserPlusIcon = (p: Props) => (
+  <Svg {...p}>
+    <circle cx="10" cy="8" r="3.5" />
+    <path d="M3.5 20c0-3.6 2.9-5.5 6.5-5.5 1.6 0 3 .4 4.1 1.1M19 14v6M16 17h6" />
+  </Svg>
+);
+export const CalendarIcon = (p: Props) => (
+  <Svg {...p}>
+    <rect x="3.5" y="5" width="17" height="15.5" rx="2.5" />
+    <path d="M3.5 10h17M8 3v4M16 3v4" />
+  </Svg>
+);
+export const BookIcon = (p: Props) => (
+  <Svg {...p}>
+    <path d="M4 5.5A2.5 2.5 0 016.5 3H20v15H6.5A2.5 2.5 0 004 20.5zM4 20.5A2.5 2.5 0 006.5 23H20v-5" />
+  </Svg>
+);
+export const ClipboardIcon = (p: Props) => (
+  <Svg {...p}>
+    <rect x="5" y="4" width="14" height="17" rx="2.5" />
+    <path d="M9 4h6v3H9zM9 12h6M9 16h4" />
+  </Svg>
+);
+export const FlameIcon = (p: Props) => (
+  <Svg {...p}>
+    <path d="M12 3c1 3.5 5 5.5 5 10a5 5 0 01-10 0c0-2 1-3.5 2-4.5 0 2 1 3 2 3 0-3-1-5.5 1-8.5z" />
+  </Svg>
+);
+export const ShareIcon = (p: Props) => (
+  <Svg {...p}>
+    <path d="M12 3v12M7.5 7.5L12 3l4.5 4.5M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7" />
+  </Svg>
+);

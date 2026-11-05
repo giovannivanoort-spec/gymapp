@@ -188,7 +188,7 @@ export const TOOLS = [
     run: async ({ group_id, from, to, limit = 20 }, { sb }) => {
       let q = sb
         .from("workouts")
-        .select("id, date, title, notes, groups(name), workout_exercises(exercise_slug, position, target_sets, target_reps)")
+        .select("id, date, title, notes, groups!inner(name), workout_exercises(exercise_slug, position, target_sets, target_reps)")
         .order("date", { ascending: false })
         .limit(limit);
       if (group_id) q = q.eq("group_id", group_id);

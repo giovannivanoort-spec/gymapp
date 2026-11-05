@@ -66,7 +66,7 @@ export default function ProfilePage() {
   }
 
   return (
-    <AppShell title="Profiel">
+    <AppShell title="Profiel" back>
       <div className="space-y-5">
         <Link href="/ranks" className="card flex items-center gap-4 hover:border-muted">
           {ranks?.overall ? (
@@ -88,8 +88,8 @@ export default function ProfilePage() {
           <Link href="/progress" className="btn-ghost justify-between">
             Progressie <ChevronRightIcon size={16} className="text-muted" />
           </Link>
-          <Link href="/templates" className="btn-ghost justify-between">
-            Mijn schema&apos;s <ChevronRightIcon size={16} className="text-muted" />
+          <Link href="/friends" className="btn-ghost justify-between">
+            Vrienden <ChevronRightIcon size={16} className="text-muted" />
           </Link>
         </div>
 

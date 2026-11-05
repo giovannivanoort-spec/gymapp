@@ -33,7 +33,7 @@ export default function ProgressPage() {
     const to = toISODate(new Date(month.getFullYear(), month.getMonth() + 1, 0));
     supabase
       .from("workouts")
-      .select("date")
+      .select("date, groups!inner(id)")
       .gte("date", from)
       .lte("date", to)
       .then(({ data }) => setPlanned(new Set((data ?? []).map((w) => w.date))));

@@ -2,13 +2,15 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { useAuth } from "./AuthProvider";
+import { ProfileButton } from "./Avatar";
 
 const NAV = [
   { href: "/", label: "Home", icon: HomeIcon },
   { href: "/nutrition", label: "Voeding", icon: FoodIcon },
   { href: "/coach", label: "Coach", icon: CoachIcon },
   { href: "/progress", label: "Progressie", icon: ChartIcon },
-  { href: "/profile", label: "Profiel", icon: UserIcon },
+  { href: "/templates", label: "Schema's", icon: ListIcon },
 ];
 
 type Props = {
@@ -22,6 +24,7 @@ type Props = {
 export function AppShell({ title, back, action, children }: Props) {
   const pathname = usePathname();
   const router = useRouter();
+  const { session, profile } = useAuth();
 
   return (
     <div className="mx-auto flex min-h-dvh max-w-2xl flex-col">
@@ -40,6 +43,9 @@ export function AppShell({ title, back, action, children }: Props) {
           )}
           <h1 className="min-w-0 flex-1 truncate text-lg font-bold">{title}</h1>
           {action}
+          {session && !pathname.startsWith("/profile") && (
+            <ProfileButton id={session.user.id} name={profile?.display_name ?? ""} />
+          )}
         </header>
       )}
 
@@ -115,11 +121,11 @@ function ChartIcon() {
     </svg>
   );
 }
-function UserIcon() {
+function ListIcon() {
   return (
     <svg {...iconProps}>
-      <circle cx="12" cy="8" r="4" />
-      <path d="M4 21c0-4 4-6 8-6s8 2 8 6" />
+      <rect x="4" y="3.5" width="16" height="17" rx="2.5" />
+      <path d="M8.5 8.5h7M8.5 12h7M8.5 15.5h4" />
     </svg>
   );
 }
