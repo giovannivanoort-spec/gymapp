@@ -7,21 +7,57 @@
 -- Gebeurt het toch, draai dan dit script nog een keer.
 
 -- ─────────────── Realtime ───────────────
+-- friendships zelf staat NIET in de realtime-publicatie: verwijderingen (ontvrienden, weigeren,
+-- intrekken) gaan via Realtime zonder RLS naar iedere luisteraar, met beide gebruikers-id's erin.
+-- In plaats daarvan krijgt elke betrokkene een "ping"-rij die alleen hijzelf kan lezen; die rij
+-- wordt alleen toegevoegd of bijgewerkt (nooit verwijderd), dus Realtime past RLS altijd toe.
+create table if not exists public.friendship_pings (
+  user_id uuid primary key,
+  changed_at timestamptz not null default now()
+);
+alter table public.friendship_pings enable row level security;
+drop policy if exists "friendship pings read own" on public.friendship_pings;
+create policy "friendship pings read own" on public.friendship_pings for select to authenticated
+  using (user_id = auth.uid());
+
+create or replace function public.ping_friendship_change()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if tg_op = 'DELETE' then
+    insert into friendship_pings (user_id) values (old.requester), (old.addressee)
+      on conflict (user_id) do update set changed_at = now();
+  else
+    insert into friendship_pings (user_id) values (new.requester), (new.addressee)
+      on conflict (user_id) do update set changed_at = now();
+  end if;
+  return null;
+end;
+$$;
+revoke all on function public.ping_friendship_change() from public, anon, authenticated;
+
+drop trigger if exists friendships_ping on public.friendships;
+create trigger friendships_ping after insert or update or delete on public.friendships
+  for each row execute function public.ping_friendship_change();
+
 do $$
 begin
-  if not exists (
+  -- Eerdere versie van dit script zette friendships in de publicatie: weer weghalen.
+  if exists (
     select 1 from pg_publication_tables
     where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'friendships'
   ) then
-    alter publication supabase_realtime add table public.friendships;
+    alter publication supabase_realtime drop table public.friendships;
+  end if;
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'friendship_pings'
+  ) then
+    alter publication supabase_realtime add table public.friendship_pings;
   end if;
 exception
   -- Geen realtime-publicatie (bijv. lokaal zonder Supabase Realtime): niets te doen.
   when undefined_object then null;
 end $$;
-
--- Realtime levert alleen rijen die je volgens RLS mag zien ("friendships read own"). Verwijderde
--- rijen bevatten alleen de sleutel (requester, addressee); de app kijkt zelf of het om jou gaat.
 
 -- ─────────────── Vriendcodes in een eigen tabel (alleen je eigen code is leesbaar) ───────────────
 create table if not exists public.friend_codes (
@@ -180,7 +216,22 @@ begin
       update workouts set created_by = heir where group_id = g.id and created_by = me;
     end if;
   end loop;
-  delete from workouts where created_by = me;
+
+  -- Workouts die je maakte in groepen waar je geen lid meer van bent (en die je niet zelf maakte):
+  -- overdragen aan een huidig lid, zodat de sets en opmerkingen van de anderen blijven bestaan.
+  -- Alleen in een groep zonder leden verdwijnt de workout.
+  for g in select distinct w.group_id from workouts w where w.created_by = me loop
+    heir := null;
+    select gm.user_id into heir from group_members gm
+      where gm.group_id = g.group_id and gm.user_id <> me
+      order by (gm.role = 'trainer') desc, gm.joined_at
+      limit 1;
+    if heir is null then
+      delete from workouts where group_id = g.group_id and created_by = me;
+    else
+      update workouts set created_by = heir where group_id = g.group_id and created_by = me;
+    end if;
+  end loop;
 
   begin
     delete from auth.users where id = me;

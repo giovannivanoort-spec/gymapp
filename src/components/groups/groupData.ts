@@ -65,8 +65,12 @@ function networkError(): GroupLoadError {
 const isMissingFunction = (e: { code?: string; message?: string } | null) =>
   !!e && (e.code === "PGRST202" || e.code === "42883" || /could not find the function/i.test(e.message ?? ""));
 
-/** Zonder RPC: zoveel set-rijen halen we hooguit op voor de aanwezigheid. */
-const ATTENDANCE_FALLBACK_LIMIT = 5000;
+/** Zonder RPC: PostgREST geeft standaard hooguit 1000 rijen per verzoek, dus per pagina ophalen. */
+const ATTENDANCE_PAGE = 1000;
+/** Zonder RPC: zoveel trainingen per verzoek (houdt de URL kort). */
+const ATTENDANCE_CHUNK = 60;
+/** Zonder RPC: vangnet tegen eindeloos doorpagineren per groep trainingen. */
+const ATTENDANCE_MAX_PAGES = 50;
 
 /**
  * Wie er per training minstens één set heeft gelogd (welk setnummer dan ook).
@@ -88,16 +92,29 @@ export async function fetchAttendance(workoutIds: string[]): Promise<Record<stri
   }
   if (!isMissingFunction(rpc.error)) throw networkError();
 
-  const { data, error } = await supabase
-    .from("set_logs")
-    .select("user_id, workout_exercises!inner(workout_id)")
-    .in("workout_exercises.workout_id", workoutIds)
-    .gt("reps", 0)
-    .limit(ATTENDANCE_FALLBACK_LIMIT);
-  if (error || !data) throw networkError();
-  for (const r of data as unknown as { user_id: string; workout_exercises: { workout_id: string } }[]) {
-    add(r.workout_exercises.workout_id, r.user_id);
-  }
+  // Zonder RPC: ruwe set-rijen, in kleine groepen trainingen en per pagina met een vaste
+  // volgorde, zodat de standaardlimiet van PostgREST niet stilletjes trainingen weglaat.
+  const chunks: string[][] = [];
+  for (let i = 0; i < workoutIds.length; i += ATTENDANCE_CHUNK) chunks.push(workoutIds.slice(i, i + ATTENDANCE_CHUNK));
+  await Promise.all(
+    chunks.map(async (ids) => {
+      for (let page = 0; page < ATTENDANCE_MAX_PAGES; page++) {
+        const from = page * ATTENDANCE_PAGE;
+        const { data, error } = await supabase
+          .from("set_logs")
+          .select("id, user_id, workout_exercises!inner(workout_id)")
+          .in("workout_exercises.workout_id", ids)
+          .gt("reps", 0)
+          .order("id")
+          .range(from, from + ATTENDANCE_PAGE - 1);
+        if (error || !data) throw networkError();
+        for (const r of data as unknown as { user_id: string; workout_exercises: { workout_id: string } }[]) {
+          add(r.workout_exercises.workout_id, r.user_id);
+        }
+        if (data.length < ATTENDANCE_PAGE) break;
+      }
+    }),
+  );
   return out;
 }
 

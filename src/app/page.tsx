@@ -99,12 +99,12 @@ export default function HomePage() {
   }, [today]);
 
   // Offline of verversen mislukt. Een offline kopie van de service worker (wel wifi, geen internet)
-  // zit in de status per sleutel van de cache en telt dus ook als offline.
+  // zit in de status per sleutel van de cache en telt dus ook als offline. "Mislukt" komt alleen uit
+  // die status per sleutel: die volgt de laatste poging, ook als een ander scherm de sleutel ophaalde.
   const states = [historyS, friendsS, groupsS, upcomingS, foodS];
   const anyOffline = states.some((s) => s.offline);
   const anyError = states.some((s) => (s.error || s.stale) && !s.offline);
-  const status: HomeSyncStatus =
-    liveStatus === "offline" || anyOffline ? "offline" : liveStatus === "error" || anyError ? "error" : "ok";
+  const status: HomeSyncStatus = liveStatus === "offline" || anyOffline ? "offline" : anyError ? "error" : "ok";
 
   const bodyweight = profile?.bodyweight_kg ?? null;
   const sex = profile?.sex ?? null;

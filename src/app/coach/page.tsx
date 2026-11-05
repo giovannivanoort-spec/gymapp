@@ -325,9 +325,14 @@ async function waitIdle(conversationId: string, signal: AbortSignal, onTick: () 
  * zo verspringt er niets en spelen de animaties niet opnieuw af.
  */
 function adoptKeys(prev: ChatItem[], next: ChatItem[]): ChatItem[] {
+  const own = new Set(next.map((it) => it.key));
   return next.map((it, i) => {
     const old = prev[i];
     if (!old || old.role !== it.role) return it;
+    // Een andere vraag op deze plek (bijv. de oude vraag terug na een mislukte "vraag bewerken"):
+    // eigen sleutel houden, anders krijgt hij de sleutel van de nieuwe vraag.
+    if (it.role === "user" && old.text !== it.text) return it;
+    if (old.key !== it.key && own.has(old.key)) return it;
     const adopted = old.key === it.key ? it : { ...it, key: old.key };
     return JSON.stringify(adopted) === JSON.stringify(old) ? old : adopted;
   });
@@ -1007,8 +1012,9 @@ function Coach() {
     } else if (r.kind === "regenerate") {
       regenerate();
     } else if (r.kind === "resend") {
-      // De mislukte vraag weghalen; submit() zet hem er opnieuw neer.
-      setItems((prev) => prev.filter((it) => it.key !== r.userKey));
+      // De mislukte vraag weghalen; submit() zet hem er opnieuw neer. Bij "vraag bewerken" knipt
+      // submit() zelf vanaf de laatste vraag (die na herladen weer de oude vraag kan zijn).
+      if (!r.replace) setItems((prev) => prev.filter((it) => it.key !== r.userKey));
       submit(r.text, r.ctx ?? null, !!r.replace);
     } else {
       // Afmaken: de vraag staat al opgeslagen, dus niet opnieuw versturen. Zonder aKey: verder in het laatste antwoord.

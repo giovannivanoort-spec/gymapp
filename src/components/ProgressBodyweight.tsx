@@ -6,7 +6,7 @@ import { CheckIcon, ChevronRightIcon } from "./Icons";
 import { LineChart, type ChartPoint } from "./LineChart";
 import { Sheet } from "./Sheet";
 import { LoadError } from "./platform/LoadError";
-import { forgetPersisted, setCached, useCachedState } from "@/lib/cache";
+import { fetchCached, forgetPersisted, invalidate, setCached, useCachedState } from "@/lib/cache";
 import { formatDate, toISODate } from "@/lib/dates";
 import { nl } from "@/lib/history";
 import { errorMessage, supabase } from "@/lib/supabase";
@@ -132,16 +132,37 @@ export function ProgressBodyweight() {
     }
   }
 
-  /** Meting opslaan. `error`: niet opgeslagen. `warning`: opgeslagen, maar het profiel liep niet mee. */
-  async function upsert(day: string, weight: number): Promise<{ error?: string; warning?: string }> {
+  /**
+   * Meting opslaan. `error`: niet opgeslagen. `warning`: opgeslagen, maar het profiel liep niet mee.
+   * `newest`: dit is de nieuwste meting en het profielgewicht volgt hem.
+   */
+  async function upsert(day: string, weight: number): Promise<{ error?: string; warning?: string; newest?: boolean }> {
     const { error: logError } = await supabase
       .from("bodyweight_logs")
       .upsert({ user_id: userId, date: day, weight_kg: weight }, { onConflict: "user_id,date" });
     if (logError) return { error: errorMessage(logError) };
-    const next = [...list.filter((x) => x.date !== day), { date: day, weight }].sort((a, b) => a.date.localeCompare(b.date));
-    commit(next);
+    let next: Entry[] | null = null;
+    if (entries !== undefined) {
+      next = [...list.filter((x) => x.date !== day), { date: day, weight }].sort((a, b) => a.date.localeCompare(b.date));
+      commit(next);
+      // Liep er nog een verzoek, dan kan dat antwoord deze meting missen: opnieuw laten ophalen.
+      if (load.refreshing) invalidate(key);
+    } else {
+      // De lijst is (nog) niet geladen: geen lijst met alleen deze meting bewaren, maar opnieuw ophalen.
+      invalidate(key);
+      try {
+        const fresh = await fetchCached(key, () => fetchEntries(userId), true);
+        if (fresh.some((x) => x.date === day && x.weight === weight)) next = fresh;
+      } catch {
+        // Ophalen lukte niet: de lijst haalt het later zelf opnieuw op.
+      }
+    }
+    // Zonder (betrouwbare) lijst is alleen een meting van vandaag zeker de nieuwste.
+    if (!next && day === toISODate()) next = [{ date: day, weight }];
+    if (!next) return {};
+    const newest = next.at(-1)?.date === day;
     const warn = await syncProfile(next);
-    return warn ? { warning: warn } : {};
+    return warn ? { warning: warn, newest } : { newest };
   }
 
   function openEditor(entry: Entry) {
@@ -171,9 +192,8 @@ export function ProgressBodyweight() {
     setBusy(false);
     if (res.error) return setError(res.error);
     setValue("");
-    const newest = date >= (latest?.date ?? "");
     setSaved(
-      newest && !res.warning
+      res.newest && !res.warning
         ? "Opgeslagen, je ranks rekenen nu met dit gewicht."
         : `Opgeslagen voor ${formatDate(date, { weekday: undefined })}.`,
     );

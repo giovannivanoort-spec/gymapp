@@ -56,37 +56,36 @@ export async function queueInsert(rows: FoodLog[]) {
 }
 
 /**
- * Verwijderen zonder verbinding. Items die zelf nog in de wachtrij stonden, verdwijnen daar gewoon
- * uit (ze hebben de server nooit bereikt).
+ * Verwijderen zonder verbinding. Items die zelf nog in de wachtrij stonden, verdwijnen daar uit.
+ * De verwijdering gaat toch mee voor alle ids: een item uit de wachtrij kan de server al hebben
+ * bereikt (antwoord weggevallen). Een niet-bestaand id verwijderen is onschuldig.
  */
 export async function queueDelete(ids: string[]) {
   const by = await currentUser();
   const set = new Set(ids);
-  const ops = read();
-  const local = new Set(ops.flatMap((o) => (o.kind === "insert" ? o.rows.map((r) => r.id) : [])));
-  const next = ops.map((o) =>
+  const next = read().map((o) =>
     o.kind === "insert" ? { ...o, rows: o.rows.filter((r) => !set.has(r.id)) } : o.kind === "confirm" ? { ...o, ids: o.ids.filter((id) => !set.has(id)) } : o,
   );
-  const remote = ids.filter((id) => !local.has(id));
-  write(remote.length ? [...next, { kind: "delete", ids: remote, by, at: Date.now() }] : next);
+  write(ids.length ? [...next, { kind: "delete", ids, by, at: Date.now() }] : next);
 }
 
-/** Gepland eten bevestigen zonder verbinding. */
+/**
+ * Gepland eten bevestigen zonder verbinding. Ook voor items uit de wachtrij gaat er een bevestiging
+ * mee (na hun insert): staat het item al op de server, dan slaat de insert het over.
+ */
 export async function queueConfirm(ids: string[]) {
   const by = await currentUser();
   const set = new Set(ids);
-  const ops = read();
-  const local = new Set(ops.flatMap((o) => (o.kind === "insert" ? o.rows.map((r) => r.id) : [])));
-  const next = ops.map((o) => (o.kind === "insert" ? { ...o, rows: o.rows.map((r) => (set.has(r.id) ? { ...r, planned: false } : r)) } : o));
-  const remote = ids.filter((id) => !local.has(id));
-  write(remote.length ? [...next, { kind: "confirm", ids: remote, by, at: Date.now() }] : next);
+  const next = read().map((o) => (o.kind === "insert" ? { ...o, rows: o.rows.map((r) => (set.has(r.id) ? { ...r, planned: false } : r)) } : o));
+  write(ids.length ? [...next, { kind: "confirm", ids, by, at: Date.now() }] : next);
 }
 
 const localIds = (ops: NutritionOp[]) => new Set(ops.flatMap((o) => (o.kind === "insert" ? o.rows.map((r) => r.id) : [])));
 
 /**
- * Items die nog alleen in de wachtrij staan, daar verwijderen. Geeft de ids terug die wel op de
- * server staan (die moeten echt verwijderd worden).
+ * Items die in de wachtrij staan, daar verwijderen. Geeft alle ids terug: ook een item uit de
+ * wachtrij kan de server al hebben bereikt (insert gelukt, antwoord weggevallen, of de wachtrij was
+ * het net aan het versturen), dus de verwijdering moet altijd ook naar de server.
  */
 export function dropLocal(ids: string[]): string[] {
   const ops = read();
@@ -94,17 +93,17 @@ export function dropLocal(ids: string[]): string[] {
   if (!ids.some((id) => local.has(id))) return ids;
   const set = new Set(ids);
   write(ops.map((o) => (o.kind === "insert" ? { ...o, rows: o.rows.filter((r) => !set.has(r.id)) } : o)));
-  return ids.filter((id) => !local.has(id));
+  return ids;
 }
 
-/** Als dropLocal, maar dan bevestigen: wachtende items worden in de wachtrij zelf bevestigd. */
+/** Als dropLocal, maar dan bevestigen: wachtende items worden in de wachtrij én op de server bevestigd. */
 export function confirmLocal(ids: string[]): string[] {
   const ops = read();
   const local = localIds(ops);
   if (!ids.some((id) => local.has(id))) return ids;
   const set = new Set(ids);
   write(ops.map((o) => (o.kind === "insert" ? { ...o, rows: o.rows.map((r) => (set.has(r.id) ? { ...r, planned: false } : r)) } : o)));
-  return ids.filter((id) => !local.has(id));
+  return ids;
 }
 
 /** Staat dit item nog in de wachtrij (nog niet op de server)? */
@@ -173,6 +172,30 @@ function dbRow(r: FoodLog) {
 let flushing = false;
 
 /**
+ * Een insert is verstuurd: hem uit de wachtrij halen. Werd er intussen (tijdens het versturen) een
+ * item uit verwijderd of bevestigd, dan stond de oude versie al op de server: die wijziging gaat
+ * er als eigen bewerking direct achteraan (alleen als de insert lukte: `ok`). Geeft true als er
+ * zo'n vervolgbewerking bij kwam.
+ */
+function settleInsert(op: Extract<NutritionOp, { kind: "insert" }>, ok: boolean): boolean {
+  const sent = new Map(op.rows.map((r) => [r.id, r]));
+  const ops = read();
+  const i = ops.findIndex((o) => o.kind === "insert" && o.at === op.at && o.by === op.by && o.rows.some((r) => sent.has(r.id)));
+  const current = i >= 0 ? (ops[i] as Extract<NutritionOp, { kind: "insert" }>) : null;
+  const now = new Map((current?.rows ?? []).map((r) => [r.id, r]));
+  const gone = [...sent.keys()].filter((id) => !now.has(id));
+  const confirmed = [...sent.values()].filter((r) => r.planned && now.get(r.id)?.planned === false).map((r) => r.id);
+  const follow: NutritionOp[] = !ok ? [] : [
+    ...(gone.length ? [{ kind: "delete" as const, ids: gone, by: op.by, at: Date.now() }] : []),
+    ...(confirmed.length ? [{ kind: "confirm" as const, ids: confirmed, by: op.by, at: Date.now() }] : []),
+  ];
+  // Op dezelfde plek, zodat een latere bewerking (bijv. ongedaan maken) er nog steeds na komt.
+  if (current) write([...ops.slice(0, i), ...follow, ...ops.slice(i + 1)]);
+  else if (follow.length) write([...follow, ...ops]);
+  return follow.length > 0;
+}
+
+/**
  * Verstuurt de wachtrij in volgorde. Stopt bij netwerk-, sessie- of serverproblemen (die blijven
  * staan); een echte fout (bijv. ongeldige waarde) gooit alleen die bewerking weg en telt als mislukt.
  */
@@ -184,20 +207,33 @@ export async function flushNutritionQueue(): Promise<{ sent: number; failed: num
   try {
     const uid = await currentUser();
     if (!uid) return { sent, failed };
-    for (const op of read()) {
-      if (op.by && op.by !== uid) continue;
-      const res =
-        op.kind === "insert"
-          ? await supabase.from("food_logs").upsert(op.rows.map(dbRow), { onConflict: "id", ignoreDuplicates: true })
-          : op.kind === "delete"
-            ? await supabase.from("food_logs").delete().in("id", op.ids)
-            : await supabase.from("food_logs").update({ planned: false }).in("id", op.ids);
-      if (res.error && isRetryableError({ ...res.error, status: res.status })) break;
-      // Alleen deze bewerking weghalen; wat er intussen bij kwam blijft staan.
-      const raw = JSON.stringify(op);
-      write(read().filter((o) => JSON.stringify(o) !== raw));
-      if (res.error) failed++;
-      else sent++;
+    // Een paar rondes: vervolgbewerkingen (zie settleInsert) gaan dan meteen mee.
+    for (let pass = 0; pass < 3; pass++) {
+      let again = false;
+      let stop = false;
+      for (const op of read()) {
+        if (op.by && op.by !== uid) continue;
+        const res =
+          op.kind === "insert"
+            ? await supabase.from("food_logs").upsert(op.rows.map(dbRow), { onConflict: "id", ignoreDuplicates: true })
+            : op.kind === "delete"
+              ? await supabase.from("food_logs").delete().in("id", op.ids)
+              : await supabase.from("food_logs").update({ planned: false }).in("id", op.ids);
+        if (res.error && isRetryableError({ ...res.error, status: res.status })) {
+          stop = true;
+          break;
+        }
+        if (op.kind === "insert") {
+          if (settleInsert(op, !res.error)) again = true;
+        } else {
+          // Alleen deze bewerking weghalen; wat er intussen bij kwam blijft staan.
+          const raw = JSON.stringify(op);
+          write(read().filter((o) => JSON.stringify(o) !== raw));
+        }
+        if (res.error) failed++;
+        else sent++;
+      }
+      if (stop || !again) break;
     }
   } finally {
     flushing = false;

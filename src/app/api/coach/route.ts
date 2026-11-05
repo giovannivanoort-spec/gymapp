@@ -18,6 +18,8 @@ const DAILY_LIMIT = Number(process.env.COACH_DAILY_LIMIT ?? 40);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Zo lang mag een onderbroken antwoord gratis worden afgemaakt (daarna telt het als nieuwe vraag). */
 const FREE_CONTINUE_MS = 15 * 60 * 1000;
+/** Zo vaak mag één vraag gratis worden afgemaakt (met upgrade-coach.sql); daarna telt afmaken als vraag. */
+const MAX_FREE_CONTINUES = 2;
 /** Meer berichten na één vraag dan dit kan niet uit één (of een paar afgemaakte) antwoorden komen. */
 const MAX_TAIL = 2 * MAX_TOOL_ROUNDS + 6;
 
@@ -61,24 +63,116 @@ class CoachError extends Error {}
  * Antwoorden die nog bezig zijn, per gesprek. Een antwoord loopt door als de verbinding wegvalt
  * (app naar de achtergrond, geen bereik in de sportschool); alleen een expliciete Stop breekt het af.
  * Op globalThis zodat het tijdens het ontwikkelen een hot reload overleeft.
+ *
+ * Met upgrade-coach.sql staat de bezetting ook in de database (coach_conversations.answer_run /
+ * answer_until / answer_stop), zodat een verzoek dat op een andere serverinstantie binnenkomt
+ * (Vercel) ziet dat er al een antwoord loopt en een Stop daar ook aankomt. Zonder die kolommen
+ * valt dit terug op alleen dit geheugen.
  */
-type Job = { stop: AbortController; finished: Promise<void> };
+type Job = {
+  stop: AbortController;
+  finished: Promise<void>;
+  /** Bezetting verlengen en kijken of er (op een andere instantie) op Stop is gedrukt. */
+  beat: () => Promise<void>;
+  /** De bezetting in de database is kwijt (verlopen en door een ander verzoek overgenomen). */
+  lost: boolean;
+};
 const store = globalThis as typeof globalThis & { __coachJobs?: Map<string, Job> };
 const jobs = (store.__coachJobs ??= new Map<string, Job>());
 
-/** Reserveert een gesprek voor één antwoord tegelijk. `release` geeft het weer vrij. */
-function claim(conversationId: string) {
-  let release = () => {};
+/** Zo lang geldt de bezetting in de database zonder hartslag (een gecrasht antwoord blokkeert niet lang). */
+const LEASE_MS = 60_000;
+const leaseEnd = () => new Date(Date.now() + LEASE_MS).toISOString();
+
+const missingColumn = (error: { code?: string; message?: string } | null) =>
+  !!error && (error.code === "PGRST204" || error.code === "42703" || /answer_(run|until|stop)/.test(error.message ?? ""));
+
+let warnedLock = false;
+function warnLock() {
+  if (warnedLock) return;
+  warnedLock = true;
+  console.warn("[coach] coach_conversations.answer_run ontbreekt: bezetting alleen per serverinstantie (draai supabase/upgrade-coach.sql).");
+}
+
+/**
+ * Reserveert een gesprek voor één antwoord tegelijk. Geeft null als er al een antwoord loopt
+ * (hier of op een andere instantie), of "error" als de database niet te bereiken is.
+ * `release` geeft het gesprek weer vrij.
+ */
+async function claim(sb: SupabaseClient, conversationId: string) {
+  if (jobs.has(conversationId)) return null;
+  const runId = randomUUID();
+  let db = false;
+  let release = async () => {};
   const finished = new Promise<void>((resolve) => {
-    release = () => {
-      if (jobs.get(conversationId) === job) jobs.delete(conversationId);
+    release = async () => {
+      if (jobs.get(conversationId) !== job) return resolve();
+      jobs.delete(conversationId);
+      if (db && !job.lost) {
+        await sb
+          .from("coach_conversations")
+          .update({ answer_run: null, answer_until: null, answer_stop: false })
+          .eq("id", conversationId)
+          .eq("answer_run", runId)
+          .then(
+            () => {},
+            () => {},
+          );
+      }
       resolve();
     };
   });
-  const job: Job = { stop: new AbortController(), finished };
+  const job: Job = {
+    stop: new AbortController(),
+    finished,
+    lost: false,
+    beat: async () => {
+      if (!db || job.lost) return;
+      const { data, error } = await sb
+        .from("coach_conversations")
+        .update({ answer_until: leaseEnd() })
+        .eq("id", conversationId)
+        .eq("answer_run", runId)
+        .select("answer_stop");
+      if (error) return; // even geen verbinding met de database: volgende keer opnieuw
+      if (!data?.length) {
+        job.lost = true;
+        job.stop.abort();
+      } else if ((data[0] as { answer_stop?: boolean }).answer_stop) {
+        job.stop.abort();
+      }
+    },
+  };
+  // Eerst in het geheugen (synchroon), zodat twee verzoeken op deze instantie niet allebei doorgaan.
   jobs.set(conversationId, job);
+  const { data, error } = await sb
+    .from("coach_conversations")
+    .update({ answer_run: runId, answer_until: leaseEnd(), answer_stop: false })
+    .eq("id", conversationId)
+    .or(`answer_until.is.null,answer_until.lt.${new Date().toISOString()}`)
+    .select("id");
+  if (error && missingColumn(error)) {
+    warnLock();
+  } else if (error) {
+    jobs.delete(conversationId);
+    return "error" as const;
+  } else if (!data?.length) {
+    jobs.delete(conversationId);
+    return null;
+  } else {
+    db = true;
+  }
   return { job, release };
 }
+
+type Lock = NonNullable<Exclude<Awaited<ReturnType<typeof claim>>, "error">>;
+
+/** Loopt er (volgens de database) nog een antwoord in dit gesprek? */
+const runningInDb = (row: Record<string, unknown> | null | undefined) =>
+  typeof row?.answer_until === "string" && Date.parse(row.answer_until) > Date.now();
+
+const busyResponse = () =>
+  Response.json({ error: "De coach is nog bezig met het vorige antwoord.", busy: true }, { status: 409 });
 
 // ───────── Inloggen en daglimiet ─────────
 
@@ -110,9 +204,20 @@ function warnLegacy() {
   console.warn("[coach] coach_usage / coach_take_question ontbreekt: de daglimiet telt nu berichten (draai supabase/upgrade-coach.sql).");
 }
 
-/** Oude telling (zonder upgrade-coach.sql): vragen in de eigen gesprekken van vandaag. */
+/**
+ * Oude telling (zonder upgrade-coach.sql): vragen in de eigen gesprekken van vandaag, plus hoe vaak
+ * een vraag opnieuw is beantwoord (`spotter.r` op het eerste blok, zie countAgainLegacy).
+ */
 async function legacyCount(sb: SupabaseClient, since: string) {
   warnLegacy();
+  const rows = await sb
+    .from("coach_messages")
+    .select("seq, again:content->0->spotter->r")
+    .eq("kind", "text")
+    .gte("created_at", since);
+  if (!rows.error && Array.isArray(rows.data)) {
+    return (rows.data as { again?: unknown }[]).reduce((n, r) => n + 1 + Math.max(0, Math.floor(Number(r.again) || 0)), 0);
+  }
   const { count } = await sb
     .from("coach_messages")
     .select("seq", { count: "exact", head: true })
@@ -134,12 +239,38 @@ async function questionsToday(sb: SupabaseClient) {
  * (twee gelijktijdige verzoeken kunnen niet allebei door de controle); anders valt dit terug op tellen.
  * `savedText`: de vraag staat al als bericht opgeslagen (telt in de oude telling dan al mee).
  */
-async function takeQuestion(sb: SupabaseClient, savedText = false): Promise<{ ok: boolean; used: number }> {
+async function takeQuestion(sb: SupabaseClient, savedText = false): Promise<{ ok: boolean; used: number; legacy: boolean }> {
   const since = startOfDayAmsterdam().toISOString();
   const { data, error } = await sb.rpc("coach_take_question", { p_since: since, p_limit: DAILY_LIMIT });
-  if (!error && typeof data === "number") return data < 0 ? { ok: false, used: DAILY_LIMIT } : { ok: true, used: data };
+  if (!error && typeof data === "number") {
+    return data < 0 ? { ok: false, used: DAILY_LIMIT, legacy: false } : { ok: true, used: data, legacy: false };
+  }
   const before = Math.max(0, (await legacyCount(sb, since)) - (savedText ? 1 : 0));
-  return before >= DAILY_LIMIT ? { ok: false, used: before } : { ok: true, used: before + 1 };
+  return before >= DAILY_LIMIT ? { ok: false, used: before, legacy: true } : { ok: true, used: before + 1, legacy: true };
+}
+
+/**
+ * Oude telling: een nieuw antwoord op een bestaande vraag (opnieuw genereren, of afmaken dat als
+ * vraag telt) voegt geen vraag-bericht toe. Daarom op de vraag zelf bijhouden hoe vaak dat gebeurde.
+ */
+async function countAgainLegacy(sb: SupabaseClient, row: Row) {
+  const blocks = Array.isArray(row.content) ? [...(row.content as Record<string, unknown>[])] : [];
+  const first = blocks[0];
+  if (!first || typeof first !== "object") return;
+  const spotter = (first.spotter && typeof first.spotter === "object" ? first.spotter : {}) as Record<string, unknown>;
+  blocks[0] = { ...first, spotter: { ...spotter, r: Math.max(0, Math.floor(Number(spotter.r) || 0)) + 1 } };
+  const { error } = await sb.from("coach_messages").update({ content: blocks }).eq("seq", row.seq);
+  if (!error) row.content = blocks;
+}
+
+/**
+ * Boekt één gratis keer afmaken voor deze (ondertekende) vraag. "missing": upgrade-coach.sql is
+ * (nog) niet gedraaid of de database is niet bereikbaar; dan telt afmaken zoals een vraag.
+ */
+async function takeContinuation(sb: SupabaseClient, nonce: string): Promise<"ok" | "used" | "missing"> {
+  const { data, error } = await sb.rpc("coach_take_continuation", { p_nonce: nonce, p_max: MAX_FREE_CONTINUES });
+  if (!error && typeof data === "boolean") return data ? "ok" : "used";
+  return "missing";
 }
 
 const limitReached = () =>
@@ -150,9 +281,11 @@ const limitReached = () =>
 
 /** Bestaat dit gesprek en is het van de gebruiker (RLS)? */
 async function ownConversation(sb: SupabaseClient, id: string | null | undefined) {
-  if (!id || !UUID.test(id)) return { id: undefined, error: null };
-  const { data, error } = await sb.from("coach_conversations").select("id").eq("id", id).maybeSingle();
-  return { id: data ? (data.id as string) : undefined, error };
+  if (!id || !UUID.test(id)) return { id: undefined, row: null, error: null };
+  // "*": met upgrade-coach.sql zit daar ook de bezetting (answer_until) bij, zonder werkt het ook.
+  const { data, error } = await sb.from("coach_conversations").select("*").eq("id", id).maybeSingle();
+  const row = data as Record<string, unknown> | null;
+  return { id: row ? (row.id as string) : undefined, row, error };
 }
 
 /**
@@ -165,7 +298,7 @@ export async function GET(req: Request) {
   const conv = new URL(req.url).searchParams.get("conversation");
   const [used, own] = await Promise.all([questionsToday(auth.sb), conv ? ownConversation(auth.sb, conv) : null]);
   return Response.json(
-    { used, limit: DAILY_LIMIT, ...(own && { running: !!own.id && jobs.has(own.id) }) },
+    { used, limit: DAILY_LIMIT, ...(own && { running: !!own.id && (jobs.has(own.id) || runningInDb(own.row)) }) },
     { headers: { "Cache-Control": "no-store" } },
   );
 }
@@ -185,22 +318,26 @@ function sign(conversationId: string, nonce: string, time: number, text: string)
   return createHmac("sha256", SIGN_KEY).update(`${conversationId}\n${nonce}\n${time}\n${text}`).digest("base64url");
 }
 
-/** Klopt de handtekening van deze (door de server opgeslagen) vraag, is hij recent en niet gekopieerd? */
-function verifiedQuestion(conversationId: string, rows: Row[], index: number) {
+/**
+ * Klopt de handtekening van deze (door de server opgeslagen) vraag, is hij recent en niet gekopieerd?
+ * Geeft dan het nonce van de vraag terug (om het aantal keer gratis afmaken te tellen), anders null.
+ */
+function verifiedQuestion(conversationId: string, rows: Row[], index: number): string | null {
   const blocks = (Array.isArray(rows[index].content) ? rows[index].content : []) as StoredText[];
   const sig = blocks.find((b) => b.type === "text" && b.spotter)?.spotter;
-  if (!sig?.n || typeof sig.t !== "number" || !sig.s) return false;
-  if (Date.now() - sig.t > FREE_CONTINUE_MS || sig.t > Date.now() + 60_000) return false;
+  if (!sig?.n || typeof sig.t !== "number" || !sig.s) return null;
+  if (Date.now() - sig.t > FREE_CONTINUE_MS || sig.t > Date.now() + 60_000) return null;
   const expected = Buffer.from(sign(conversationId, sig.n, sig.t, questionText(blocks)));
   const given = Buffer.from(sig.s);
-  if (expected.length !== given.length || !timingSafeEqual(expected, given)) return false;
-  return !rows.some(
+  if (expected.length !== given.length || !timingSafeEqual(expected, given)) return null;
+  const copied = rows.some(
     (r, i) =>
       i !== index &&
       r.kind === "text" &&
       Array.isArray(r.content) &&
       (r.content as StoredText[]).some((b) => b.spotter?.n === sig.n),
   );
+  return copied ? null : sig.n;
 }
 
 const openToolUse = (row: Row | undefined) =>
@@ -282,7 +419,18 @@ export async function POST(req: Request) {
   if (body?.stop) {
     const job = conversationId ? jobs.get(conversationId) : undefined;
     job?.stop.abort();
-    return Response.json({ stopped: !!job });
+    let stopped = !!job;
+    // Loopt het antwoord op een andere instantie: die ziet de Stop bij zijn volgende hartslag.
+    if (conversationId && !job && runningInDb(own.row)) {
+      const { data, error } = await sb
+        .from("coach_conversations")
+        .update({ answer_stop: true })
+        .eq("id", conversationId)
+        .gt("answer_until", new Date().toISOString())
+        .select("id");
+      if (!error && data?.length) stopped = true;
+    }
+    return Response.json({ stopped });
   }
 
   const replace = body?.replace === "answer" || body?.replace === "question" ? body.replace : undefined;
@@ -295,9 +443,7 @@ export async function POST(req: Request) {
   if ((continuing || replace) && !conversationId) {
     return Response.json({ error: "Dit gesprek bestaat niet meer. Stel je vraag opnieuw." }, { status: 404 });
   }
-  if (conversationId && jobs.has(conversationId)) {
-    return Response.json({ error: "De coach is nog bezig met het vorige antwoord.", busy: true }, { status: 409 });
-  }
+  if (conversationId && (jobs.has(conversationId) || runningInDb(own.row))) return busyResponse();
   const workoutId = body?.context?.workout_id && UUID.test(body.context.workout_id) ? body.context.workout_id : null;
   const events = Array.isArray(body?.context?.events)
     ? body.context.events
@@ -306,8 +452,15 @@ export async function POST(req: Request) {
         .map((e) => e.replace(/[<>]/g, "").slice(0, 300))
     : [];
 
-  // Vanaf hier is het gesprek bezet, zodat twee verzoeken niet door elkaar heen schrijven.
-  let lock = conversationId ? claim(conversationId) : null;
+  // Vanaf hier is het gesprek bezet, zodat twee verzoeken niet door elkaar heen schrijven
+  // (ook niet als ze op verschillende serverinstanties binnenkomen).
+  let lock: Lock | null = null;
+  if (conversationId) {
+    const claimed = await claim(sb, conversationId);
+    if (claimed === "error") return Response.json({ error: "Gesprek laden mislukt. Probeer het opnieuw." }, { status: 503 });
+    if (!claimed) return busyResponse();
+    lock = claimed;
+  }
   let handedOff = false;
   try {
     // Snelle controle vooraf, zodat een volle dag niets opslaat. Het echte boeken volgt hieronder.
@@ -337,6 +490,7 @@ export async function POST(req: Request) {
         const q = await takeQuestion(sb);
         if (!q.ok) return limitReached();
         used = q.used;
+        if (q.legacy) await countAgainLegacy(sb, rows[qi]);
         const { error } = await sb
           .from("coach_messages")
           .delete()
@@ -357,12 +511,17 @@ export async function POST(req: Request) {
       if (last.kind === "assistant" && !openToolUse(last)) {
         return Response.json({ error: "Dit antwoord is al compleet.", complete: true }, { status: 409 });
       }
+      // Gratis afmaken kan maar een paar keer per vraag (in de database bijgehouden), anders zou je
+      // na het wissen van het antwoord steeds opnieuw een volledig antwoord kunnen laten maken.
       const qi = rows.findLastIndex((r) => r.kind === "text");
-      const free = qi >= 0 && verifiedQuestion(conversationId!, rows, qi) && wellFormedTail(rows.slice(qi + 1));
-      if (!free) {
-        const q = await takeQuestion(sb);
+      const nonce = qi >= 0 ? verifiedQuestion(conversationId!, rows, qi) : null;
+      const free = nonce && wellFormedTail(rows.slice(qi + 1)) ? await takeContinuation(sb, nonce) : "used";
+      if (free !== "ok") {
+        // Zonder bijhouden ("missing") telt afmaken als vraag; de vraag zelf staat al opgeslagen.
+        const q = await takeQuestion(sb, free === "missing");
         if (!q.ok) return limitReached();
         used = q.used;
+        if (q.legacy && free === "used" && qi >= 0) await countAgainLegacy(sb, rows[qi]);
       }
     }
 
@@ -371,7 +530,12 @@ export async function POST(req: Request) {
       const { data, error } = await sb.from("coach_conversations").insert({ title: titleFrom(message) }).select("id").single();
       if (error) return Response.json({ error: "Gesprek starten mislukt. Probeer het opnieuw." }, { status: 500 });
       conversationId = data.id as string;
-      lock = claim(conversationId);
+      const claimed = await claim(sb, conversationId);
+      if (!claimed || claimed === "error") {
+        await sb.from("coach_conversations").delete().eq("id", conversationId).then(() => {}, () => {});
+        return Response.json({ error: "Gesprek starten mislukt. Probeer het opnieuw." }, { status: 500 });
+      }
+      lock = claimed;
     }
     const convId = conversationId;
 
@@ -441,7 +605,7 @@ export async function POST(req: Request) {
     handedOff = true;
     return response;
   } finally {
-    if (!handedOff) lock?.release();
+    if (!handedOff) await lock?.release();
   }
 }
 
@@ -462,7 +626,7 @@ function startAnswer({
   messages: Param[];
   used: number | null;
   job: Job;
-  release: () => void;
+  release: () => Promise<void>;
 }) {
   const client = new Anthropic();
   const encoder = new TextEncoder();
@@ -492,7 +656,11 @@ function startAnswer({
   async function run() {
     send({ t: "conversation", id: convId });
     if (used != null) send({ t: "quota", used, limit: DAILY_LIMIT });
-    const beat = setInterval(() => send({ t: "ping" }), 5000);
+    const beat = setInterval(() => {
+      send({ t: "ping" });
+      // Bezetting in de database verlengen (en een Stop van een andere instantie oppikken).
+      void job.beat().catch(() => {});
+    }, 5000);
 
     /** Tekst van de lopende ronde die nog niet is opgeslagen (voor een gestopt antwoord). */
     let roundText = "";
@@ -653,7 +821,8 @@ function startAnswer({
     } finally {
       // Gestopt: bewaar wat er al stond (met een markering), zodat het antwoord na herladen niet verdwijnt
       // en de coach bij de volgende vraag weet dat dit antwoord is afgebroken.
-      if (abort.signal.aborted && !answered) {
+      // Bezetting kwijt: dan schrijft er intussen een ander verzoek in dit gesprek, niets meer toevoegen.
+      if (abort.signal.aborted && !answered && !job.lost) {
         const partial = roundText.trim();
         await save(sb, convId, "assistant", "assistant", [
           { type: "text", text: partial ? `${partial}\n\n${STOP_MARK}` : STOP_MARK },
@@ -668,7 +837,7 @@ function startAnswer({
           () => {},
         );
       clearInterval(beat);
-      release();
+      await release();
       close();
     }
   }

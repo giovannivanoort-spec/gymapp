@@ -160,8 +160,9 @@ export async function restoreLogs(logs: FoodLog[]) {
   markNutritionMutation();
   // Stond de verwijdering nog in de wachtrij? Dan die schrappen in plaats van opnieuw invoegen.
   const remaining = new Set(cancelQueuedDeletes(logs.map((l) => l.id)));
-  // Een item dat zelf nog wachtte, gaat terug in de wachtrij.
-  const local = logs.filter((l) => l.pending && remaining.has(l.id));
+  // Een item dat zelf nog wachtte, gaat terug in de wachtrij (ook als zijn verwijdering net is
+  // geschrapt: het stond toen al niet meer in de wachtrij).
+  const local = logs.filter((l) => l.pending);
   if (local.length) await queueInsert(local);
   const list = logs.filter((l) => remaining.has(l.id) && !l.pending);
   if (!list.length) return;

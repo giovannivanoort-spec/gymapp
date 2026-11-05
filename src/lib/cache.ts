@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useSyncExternalStore } from "react";
-import { isNetworkError, lastStaleCachedAt, StaleDataError, staleResponseCount } from "./supabase";
+import { isNetworkError, StaleDataError, trackStaleResponses } from "./supabase";
 
 /**
  * Kleine cache voor opgehaalde data ("stale-while-revalidate"): een pagina toont direct wat er
@@ -308,28 +308,37 @@ function loadIdbIndex(): Promise<Map<string, IdbMeta> | null> {
   return idbIndexPromise;
 }
 
-/** Leest een groot item uit IndexedDB in het geheugen en laat de schermen het weten. */
-function hydrateFromIdb(key: string) {
+/**
+ * Leest een groot item uit IndexedDB in het geheugen en laat de schermen het weten. Met `replace`
+ * (een ander tabblad schreef een nieuwere versie) blijft de huidige data staan tot de nieuwere
+ * kopie is ingelezen, en wordt die alleen overgenomen als hij echt nieuwer is.
+ */
+function hydrateFromIdb(key: string, replace = false) {
   if (pendingIdb.has(key)) return;
   const gen = generation;
   const p = (async () => {
     const idx = await loadIdbIndex();
-    if (gen !== generation || mem.has(key)) return;
+    if (gen !== generation || (!replace && mem.has(key))) return;
     if (!idx?.has(key)) {
-      missing.add(key);
+      if (!mem.has(key)) missing.add(key);
       return;
     }
     const db = await openDb();
     if (!db) return;
     const rec = (await reqP(db.transaction(DATA_STORE, "readonly").objectStore(DATA_STORE).get(key))) as IdbRecord | undefined;
     // Intussen vers opgehaald of alles gewist: dat gaat voor.
-    if (gen !== generation || mem.has(key)) return;
+    if (gen !== generation || (!replace && mem.has(key))) return;
     if (!rec || typeof rec.raw !== "string") {
       idx.delete(key);
-      missing.add(key);
+      if (!mem.has(key)) missing.add(key);
       return;
     }
     const at = Number(rec.at) || 0;
+    if (replace) {
+      // Een eigen fetch die nu loopt, of data die minstens zo nieuw is, gaat voor.
+      const cur = mem.get(key);
+      if (inflight.has(key) || (cur && cur.at >= at)) return;
+    }
     const parsed = JSON.parse(rec.raw) as { data: unknown };
     mem.set(key, invalidatedSince(key, at) ? { data: parsed.data, at, stale: true } : { data: parsed.data, at });
     touched.set(key, Date.now());
@@ -395,7 +404,7 @@ async function writeIdb(key: string, raw: string, at: number) {
     await txDone(tx);
     evict.forEach((k) => idx.delete(k));
     idx.set(key, { key, at, size: raw.length });
-    broadcast({ type: "key", key });
+    broadcast({ type: "key", key, at });
   } catch {
     // Opslag vol of geweigerd: liever geen dan een verouderde kopie.
     await idbRemove([key]);
@@ -448,7 +457,8 @@ if (typeof window !== "undefined") {
 
 // ─────────── Andere tabbladen (IndexedDB heeft geen "storage"-event) ───────────
 
-type Broadcast = { type: "key"; key: string } | { type: "clear" };
+/** `at`: tijdstip van de data die het andere tabblad net in IndexedDB zette (ontbreekt bij wissen). */
+type Broadcast = { type: "key"; key: string; at?: number } | { type: "clear" };
 let channel: BroadcastChannel | null = null;
 try {
   if (typeof window !== "undefined" && typeof BroadcastChannel !== "undefined") channel = new BroadcastChannel("spotter-cache");
@@ -479,6 +489,14 @@ if (channel) {
       idbIndexPromise = null;
       idbIndex = null;
       if (inflight.has(msg.key)) return;
+      const cur = mem.get(msg.key);
+      if (cur && typeof msg.at === "number") {
+        // Het andere tabblad schreef nieuwe data. De huidige data niet weggooien (dan zou dit
+        // tabblad zelf opnieuw ophalen en wegschrijven, waarop het andere tabblad weer ophaalt,
+        // enzovoort), maar de nieuwere kopie inlezen en pas overnemen als die echt nieuwer is.
+        if (cur.at < msg.at) hydrateFromIdb(msg.key, true);
+        return;
+      }
       mem.delete(msg.key);
       missing.delete(msg.key);
       notify(msg.key);
@@ -570,8 +588,11 @@ export type Persist = boolean | ((data: unknown) => boolean);
  * als vers opgeslagen: bestaande data blijft staan (de promise geeft die terug), en zonder
  * bestaande data wordt de kopie getoond maar verouderd gemarkeerd. De status krijgt dan een
  * StaleDataError, zodat het scherm "offline" kan tonen en het later opnieuw geprobeerd wordt.
+ *
+ * Met `maxAge`: blijkt de bewaarde kopie die nog uit IndexedDB kwam al jonger dan `maxAge` ms,
+ * dan wordt er niet opgehaald.
  */
-export function fetchCached<T>(key: string, fetcher: () => Promise<T>, persist: Persist = false): Promise<T> {
+export function fetchCached<T>(key: string, fetcher: () => Promise<T>, persist: Persist = false, maxAge?: number): Promise<T> {
   const v = versionOf(key);
   const running = inflight.get(key);
   if (running && running.v === v) return running.p as Promise<T>;
@@ -582,14 +603,12 @@ export function fetchCached<T>(key: string, fetcher: () => Promise<T>, persist: 
   load(key);
   const warming = pendingIdb.get(key);
   const ready = warming ? Promise.race([warming, new Promise<void>((r) => setTimeout(r, WARM_WAIT_MS))]) : Promise.resolve();
-  let hitsBefore = 0;
-  const p: Promise<T> = ready
-    .then(() => {
-      hitsBefore = staleResponseCount();
-      return fetcher();
-    })
-    .then(
-      (data) => {
+
+  const attempt = (): Promise<T> =>
+    // Alleen antwoorden van deze fetcher zelf tellen als offline kopie, niet die van een ander
+    // verzoek dat toevallig tegelijk liep (zie trackStaleResponses).
+    trackStaleResponses(fetcher).then(
+      ({ data, stale, cachedAt }) => {
         if (gen !== generation) return data;
         if (versionOf(key) !== v) {
           // Vergeten met removeCached: niets meer wegschrijven.
@@ -600,9 +619,8 @@ export function fetchCached<T>(key: string, fetcher: () => Promise<T>, persist: 
           // Tijdens het ophalen ongeldig verklaard: dit antwoord kan te oud zijn.
           return fetchCached(key, fetcher, persist);
         }
-        if (staleResponseCount() !== hitsBefore) {
+        if (stale) {
           const prev = load(key);
-          const cachedAt = lastStaleCachedAt();
           const patch: Status = {
             error: new StaleDataError(cachedAt),
             errorAt: Date.now(),
@@ -633,7 +651,21 @@ export function fetchCached<T>(key: string, fetcher: () => Promise<T>, persist: 
         }
         throw err;
       },
-    )
+    );
+
+  const p: Promise<T> = ready
+    .then(() => {
+      // Wat intussen uit IndexedDB binnenkwam (bijv. net opgehaald door een ander tabblad), kan
+      // al vers genoeg zijn: dan niet nog eens ophalen.
+      if (warming && maxAge !== undefined && gen === generation && versionOf(key) === v) {
+        const e = mem.get(key);
+        if (e && isFresh(e, maxAge)) {
+          setStatus(key, { error: null, errorAt: 0, failures: 0, loading: false });
+          return e.data as T;
+        }
+      }
+      return attempt();
+    })
     .finally(() => {
       if (inflight.get(key)?.p === p) inflight.delete(key);
     });
@@ -975,7 +1007,7 @@ export function useCachedState<T>(
     if (isFresh(entry, maxAge)) return;
     if (st.loading) return;
     const run = () => {
-      fetchCached(key, fetcher, persist).catch(() => {});
+      fetchCached(key, fetcher, persist, maxAge).catch(() => {});
     };
     if (st.failures) {
       // Offline: wachten op het "online"-signaal in plaats van steeds opnieuw proberen.

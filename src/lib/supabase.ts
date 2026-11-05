@@ -11,8 +11,8 @@ export const supabaseConfigured = Boolean(url && key);
 /**
  * De service worker geeft zonder netwerk een bewaarde kopie van Supabase-data terug en zet daar
  * de header `x-sw-cache: hit` bij. Zo'n antwoord lijkt voor supabase-js een gewone 200, maar is
- * oud: de cache-laag (cache.ts) mag het niet als vers opslaan. Daarom tellen we zulke antwoorden;
- * fetchCached vergelijkt de teller voor en na het ophalen.
+ * oud: de cache-laag (cache.ts) mag het niet als vers opslaan. Daarom tellen we zulke antwoorden,
+ * per ophaalactie (trackStaleResponses) en voor de hele app (staleResponseCount).
  */
 let staleHits = 0;
 let staleCachedAt = 0;
@@ -25,6 +25,56 @@ export function staleResponseCount(): number {
 /** Tijdstip (ms) waarop de laatst getoonde offline kopie oorspronkelijk is opgehaald, 0 als onbekend. */
 export function lastStaleCachedAt(): number {
   return staleCachedAt;
+}
+
+/**
+ * Eén ophaalactie (een fetcher van de cache). Verzoeken die de fetcher meteen bij het starten
+ * opbouwt, worden er exact aan gekoppeld (via hun AbortSignal). Verzoeken van na een `await`
+ * kunnen we niet koppelen; die tellen alleen mee voor acties die al een eigen antwoord binnen
+ * hebben of geen gekoppeld verzoek hebben (dus mogelijk al verder zijn), niet voor een actie die
+ * nog op zijn eigen verzoek wacht. Zo maakt een offline kopie van het ene verzoek de verse data
+ * van een ander, gelijktijdig verzoek niet "oud".
+ */
+type StaleTracker = { builders: number; completed: number; hits: number; cachedAt: number };
+let currentTracker: StaleTracker | null = null;
+const activeTrackers = new Set<StaleTracker>();
+const signalOwner = new WeakMap<AbortSignal, StaleTracker>();
+
+/**
+ * Voert `fn` uit en houdt bij of een van zijn antwoorden uit de offline kopie van de service
+ * worker kwam. `cachedAt`: wanneer die kopie oorspronkelijk is opgehaald (ms), 0 als onbekend.
+ */
+export function trackStaleResponses<T>(fn: () => Promise<T>): Promise<{ data: T; stale: boolean; cachedAt: number }> {
+  const t: StaleTracker = { builders: 0, completed: 0, hits: 0, cachedAt: 0 };
+  activeTrackers.add(t);
+  const prev = currentTracker;
+  currentTracker = t;
+  let p: Promise<T>;
+  try {
+    p = fn();
+  } catch (err) {
+    p = Promise.reject(err);
+  } finally {
+    currentTracker = prev;
+  }
+  return p
+    .finally(() => activeTrackers.delete(t))
+    .then((data) => ({ data, stale: t.hits > 0, cachedAt: t.cachedAt }));
+}
+
+/** Koppelt een query die nu (synchroon in een fetcher) wordt opgebouwd aan die ophaalactie. */
+function tagBuilder<B>(builder: B): B {
+  const t = currentTracker;
+  const b = builder as unknown as { fetch?: unknown };
+  if (!t || !b || typeof b.fetch !== "function") return builder;
+  const inner = b.fetch as typeof fetch;
+  t.builders++;
+  b.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const signal = init?.signal ?? new AbortController().signal;
+    if (!signalOwner.has(signal)) signalOwner.set(signal, t);
+    return inner(input, { ...init, signal });
+  }) as typeof fetch;
+  return builder;
 }
 
 /** Data kwam uit de offline kopie van de service worker (geen verbinding). */
@@ -75,16 +125,25 @@ const trackedFetch: typeof fetch = async (input, init) => {
   const { url: reqUrl, method } = requestInfo(input, init);
   const isRead = method === "GET" && reqUrl.includes("/rest/v1/");
   if (!isRead || typeof window === "undefined") return fetch(input, init);
+  // Bij welke ophaalactie(s) hoort dit verzoek? Zie StaleTracker.
+  const owner = init?.signal ? signalOwner.get(init.signal) : undefined;
+  const owners = owner ? [owner] : [...activeTrackers].filter((a) => a.completed > 0 || a.builders === 0);
   const t = withReadTimeout(init);
   try {
     const res = await fetch(input, t.init);
     if (res.headers.get("x-sw-cache") === "hit") {
+      const cachedAt = Number(res.headers.get("x-sw-cached-at")) || 0;
       staleHits++;
-      staleCachedAt = Number(res.headers.get("x-sw-cached-at")) || 0;
+      staleCachedAt = cachedAt;
+      for (const o of owners) {
+        o.hits++;
+        o.cachedAt = cachedAt;
+      }
     }
     return res;
   } finally {
     t.done();
+    if (owner) owner.completed++;
   }
 };
 
@@ -92,6 +151,15 @@ const trackedFetch: typeof fetch = async (input, init) => {
 export const supabase: SupabaseClient = createClient(url || "https://placeholder.supabase.co", key || "placeholder-key", {
   global: { fetch: trackedFetch },
 });
+
+// Queries die een fetcher van de cache opbouwt, koppelen aan die ophaalactie (zie trackStaleResponses).
+{
+  const client = supabase as unknown as { from: (...args: unknown[]) => unknown; rpc: (...args: unknown[]) => unknown };
+  const from = client.from.bind(supabase);
+  const rpc = client.rpc.bind(supabase);
+  client.from = (...args: unknown[]) => tagBuilder(from(...args));
+  client.rpc = (...args: unknown[]) => tagBuilder(rpc(...args));
+}
 
 // ─────────── Profielen (voeding blijft privé) ───────────
 

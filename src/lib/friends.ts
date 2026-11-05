@@ -148,22 +148,17 @@ function startLive(userId: string): () => void {
       refreshFriends(userId).catch(() => invalidate(friendsKey(userId)));
     }, 250);
   };
-  const table = { schema: "public", table: "friendships" } as const;
-  // Verwijderingen (vriend verwijderd, verzoek geweigerd of ingetrokken) kunnen niet gefilterd
-  // worden: die komen binnen met alleen de sleutel, dus zelf kijken of het om jou gaat.
-  const onDelete = (payload: { old?: Partial<{ requester: string; addressee: string }> }) => {
-    const old = payload.old ?? {};
-    if ((!old.requester && !old.addressee) || old.requester === userId || old.addressee === userId) refresh();
-  };
-  // Zonder de upgrade-SQL (tabel niet in de realtime-publicatie) komen er gewoon geen events;
-  // dan blijft verversen bij terugkeren naar de app en na 15 s werken.
+  // Niet naar friendships zelf luisteren: verwijderingen daarvan kunnen niet gefilterd worden en
+  // zouden iedereens (ont)vriendingen naar elke gebruiker sturen. upgrade-social.sql houdt per
+  // gebruiker een eigen "ping"-rij bij (alleen zelf leesbaar) die bij elke wijziging aan jouw
+  // vriendschappen wordt toegevoegd of bijgewerkt, ook bij verwijderen.
+  // Zonder de upgrade-SQL (tabel bestaat niet) komen er gewoon geen events; dan blijft verversen
+  // bij terugkeren naar de app en na 15 s werken.
+  const table = { schema: "public", table: "friendship_pings", filter: `user_id=eq.${userId}` } as const;
   const channel = supabase
     .channel(`friendships-${userId}-${++liveSeq}`)
-    .on("postgres_changes", { ...table, event: "INSERT", filter: `addressee=eq.${userId}` }, refresh)
-    .on("postgres_changes", { ...table, event: "INSERT", filter: `requester=eq.${userId}` }, refresh)
-    .on("postgres_changes", { ...table, event: "UPDATE", filter: `addressee=eq.${userId}` }, refresh)
-    .on("postgres_changes", { ...table, event: "UPDATE", filter: `requester=eq.${userId}` }, refresh)
-    .on("postgres_changes", { ...table, event: "DELETE" }, onDelete)
+    .on("postgres_changes", { ...table, event: "INSERT" }, refresh)
+    .on("postgres_changes", { ...table, event: "UPDATE" }, refresh)
     .subscribe();
   const onVisible = () => {
     if (document.visibilityState === "visible") refreshFriends(userId).catch(() => {});

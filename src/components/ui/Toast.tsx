@@ -31,6 +31,8 @@ type ToastItem = {
   tone: ToastTone;
   action?: ToastAction;
   leaving: boolean;
+  /** Blijft staan tot wegklikken (duration 0): een nieuwe melding duwt hem niet weg. */
+  sticky: boolean;
 };
 
 const EXIT_MS = 180;
@@ -99,7 +101,10 @@ function defaultDuration(o: ToastOptions) {
 
 /** Verbergt een melding (met uitgaande animatie). Zonder id: alle meldingen. */
 export function dismissToast(id?: number) {
-  const targets = items.filter((t) => !t.leaving && (id === undefined || t.id === id));
+  hide(items.filter((t) => !t.leaving && (id === undefined || t.id === id)));
+}
+
+function hide(targets: ToastItem[]) {
   if (!targets.length) return;
   for (const t of targets) {
     clearTimeout(timers.get(t.id));
@@ -120,13 +125,15 @@ export function dismissToast(id?: number) {
 
 function show(message: string, options: ToastOptions = {}): number {
   const id = ++counter;
-  // Eén melding tegelijk: een nieuwe vervangt de vorige (die schuift netjes weg).
-  dismissToast();
-  items = [...items, { id, message, tone: options.tone ?? "info", action: options.action, leaving: false }];
-  emit();
   const ms = options.duration ?? defaultDuration(options);
   // 0 of Infinity: blijft staan tot hij wordt weggeklikt (bijv. "Nieuwe versie, herladen").
-  if (ms > 0 && Number.isFinite(ms)) schedule(id, ms);
+  const sticky = !(ms > 0 && Number.isFinite(ms));
+  // Eén tijdelijke melding tegelijk: een nieuwe vervangt de vorige (die schuift netjes weg).
+  // Blijvende meldingen blijven staan; die verdwijnen alleen via hun eigen knop of dismissToast(id).
+  hide(items.filter((t) => !t.leaving && !t.sticky));
+  items = [...items, { id, message, tone: options.tone ?? "info", action: options.action, leaving: false, sticky }];
+  emit();
+  if (!sticky) schedule(id, ms);
   return id;
 }
 

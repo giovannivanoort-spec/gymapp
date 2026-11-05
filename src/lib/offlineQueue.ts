@@ -137,9 +137,13 @@ export function markFailed(op: QueuedOp, error: unknown) {
   writeJson(FAILED_KEY, [...readFailed().filter((f) => !sameSet(keyOf(f.op), key)), entry].slice(-50));
 }
 
-/** Door dit account in de wachtrij gezet (een trainer logt ook voor vrienden). */
+/**
+ * Door dit account in de wachtrij gezet (een trainer logt ook voor vrienden). Bewerkingen uit een
+ * oudere versie hebben geen `by`: die horen bij wie nu is ingelogd (de trainer kan offline sets van
+ * vrienden hebben gelogd). Mag dit account de set niet schrijven, dan gaat hij naar de mislukte sets.
+ */
 export function isOwnOp(op: QueuedOp, uid: string): boolean {
-  return (op.by ?? keyOf(op).user_id) === uid;
+  return op.by === undefined || op.by === uid;
 }
 
 /** Sleutel van een set voor het slot hieronder (zelfde vorm als op de trainingspagina). */

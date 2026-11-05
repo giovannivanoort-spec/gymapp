@@ -481,8 +481,10 @@ function Workout() {
     if (latest) pendingSaves.current.delete(k);
 
     if (error && isRetryableError({ ...error, status })) {
-      // Geen verbinding, time-out of sessie verlopen: bewaren en later versturen.
-      queueOp({ kind: "upsert", row }, { ...error, status });
+      // Geen verbinding, time-out of sessie verlopen: bewaren en later versturen. Alleen als dit nog
+      // de nieuwste bewerking is: een latere opslag of wissen van deze set gaat voor (anders komt een
+      // intussen gewiste set via de wachtrij terug).
+      if (latest) queueOp({ kind: "upsert", row }, { ...error, status });
       if (retry) removeFailed(keyObj);
       if (lowered) markFeedDirty(we.exercise_slug, uid);
       navigator.vibrate?.(12);
@@ -541,17 +543,19 @@ function Workout() {
       pendingSaves.current.delete(k);
       return;
     }
-    const res = await withSetLock(k, async () =>
-      pendingSaves.current.get(k) === "delete"
-        ? await supabase
-            .from("set_logs")
-            .delete()
-            .eq("workout_exercise_id", we.id)
-            .eq("user_id", uid)
-            .eq("set_number", n)
-            .abortSignal(writeTimeout())
-        : null,
-    );
+    const res = await withSetLock(k, async () => {
+      if (pendingSaves.current.get(k) !== "delete") return null;
+      const out = await supabase
+        .from("set_logs")
+        .delete()
+        .eq("workout_exercise_id", we.id)
+        .eq("user_id", uid)
+        .eq("set_number", n)
+        .abortSignal(writeTimeout());
+      // Nog binnen het slot: een wachtende oudere opslag van deze set mag na het wissen nooit meer worden verstuurd.
+      if (!out.error) dequeue(key);
+      return out;
+    });
     if (!res) return;
     const { error, status } = res;
     if (pendingSaves.current.get(k) === "delete") pendingSaves.current.delete(k);

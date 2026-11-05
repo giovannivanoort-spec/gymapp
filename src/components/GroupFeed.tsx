@@ -95,6 +95,11 @@ export function GroupFeed({
     const channel = supabase
       .channel(`feed-${groupId}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "activities", filter: `group_id=eq.${groupId}` }, refresh)
+      .subscribe();
+    // Eigen kanaal: activity_kudos staat pas in de realtime-publicatie na upgrade-groups.sql.
+    // Zonder die upgrade faalt dit kanaal, maar blijft het activiteitenkanaal hierboven werken.
+    const kudosChannel = supabase
+      .channel(`feed-kudos-${groupId}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "activity_kudos" }, (payload) => {
         const row = (payload.new ?? payload.old) as { activity_id?: string } | null;
         const aid = row?.activity_id ?? (payload.old as { activity_id?: string } | null)?.activity_id;
@@ -107,6 +112,7 @@ export function GroupFeed({
     return () => {
       document.removeEventListener("visibilitychange", onVisible);
       supabase.removeChannel(channel);
+      supabase.removeChannel(kudosChannel);
     };
   }, [groupId, limit]);
 

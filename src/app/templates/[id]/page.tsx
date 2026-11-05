@@ -138,7 +138,9 @@ export default function TemplateEditPage() {
   const isOwner = !template || template.owner_id === userId;
   const trainerOfShared = !!sharedGroup && !!trainerGroups?.some((g) => g.id === sharedGroup);
   const canEdit = isOwner || trainerOfShared;
-  const canShare = !!template && !!trainerGroups?.length && (isOwner || trainerOfShared) && remote?.kind !== "gone";
+  // De eigenaar kan het delen altijd stoppen, ook als hij geen trainer van een groep meer is.
+  const canShare =
+    !!template && !!trainerGroups && remote?.kind !== "gone" && ((trainerGroups.length > 0 && (isOwner || trainerOfShared)) || (isOwner && !!sharedGroup));
   const sharedName = sharedGroup ? (groups?.find((g) => g.id === sharedGroup)?.name ?? "je groep") : null;
 
   function loadNewest(t: Template) {
