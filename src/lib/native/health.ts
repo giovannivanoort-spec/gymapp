@@ -186,9 +186,22 @@ export type HealthLink = {
   lastSyncAt: string | null;
   /** Aantal dagen met data bij de laatste sync. */
   lastSyncDays: number;
+  /** Wat Health Connect bij de laatste sync teruggaf voor de laatste 3 dagen (nieuwste eerst), om te kunnen controleren. */
+  lastSyncPreview: HealthDayPreview[];
 };
 
-const EMPTY_LINK: HealthLink = { connected: false, connectedAt: null, lastSyncAt: null, lastSyncDays: 0 };
+export type HealthDayPreview = { date: string; steps: number | null; kcal: number | null };
+
+const EMPTY_LINK: HealthLink = { connected: false, connectedAt: null, lastSyncAt: null, lastSyncDays: 0, lastSyncPreview: [] };
+
+function parsePreview(v: unknown): HealthDayPreview[] {
+  if (!Array.isArray(v)) return [];
+  const num = (x: unknown) => (typeof x === "number" && Number.isFinite(x) ? x : null);
+  return v
+    .filter((d): d is Record<string, unknown> => !!d && typeof d === "object" && typeof (d as { date?: unknown }).date === "string")
+    .slice(0, 3)
+    .map((d) => ({ date: d.date as string, steps: num(d.steps), kcal: num(d.kcal) }));
+}
 const LINK_EVENT = "spotter:health-link";
 const linkKey = (userId: string) => `spotter:health-connect:${userId}`;
 
@@ -209,6 +222,7 @@ function parseLink(raw: string | null): HealthLink {
       connectedAt: typeof v.connectedAt === "string" ? v.connectedAt : null,
       lastSyncAt: typeof v.lastSyncAt === "string" ? v.lastSyncAt : null,
       lastSyncDays: Number(v.lastSyncDays) || 0,
+      lastSyncPreview: parsePreview(v.lastSyncPreview),
     };
   } catch {
     return EMPTY_LINK;
@@ -409,7 +423,11 @@ export function syncHealth(userId: string, { days = HEALTH_SYNC_DAYS }: { days?:
     const at = new Date().toISOString();
     // Intussen ontkoppeld (of toestemming ingetrokken)? Dan niets terugzetten.
     const cur = getHealthLink(userId);
-    if (cur.connected) writeLink(userId, { ...cur, lastSyncAt: at, lastSyncDays: payload.length });
+    const lastSyncPreview: HealthDayPreview[] = range
+      .slice(-3)
+      .reverse()
+      .map((d) => ({ date: d.date, steps: bounded(steps.get(d.date), ACTIVITY_LIMITS.steps), kcal: bounded(kcal.get(d.date), ACTIVITY_LIMITS.activeKcal) }));
+    if (cur.connected) writeLink(userId, { ...cur, lastSyncAt: at, lastSyncDays: payload.length, lastSyncPreview });
     return { sent, days: n, at };
   })();
   running = job;

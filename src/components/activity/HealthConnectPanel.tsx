@@ -5,7 +5,7 @@ import { AlertIcon, ChevronRightIcon, ExternalIcon, RefreshIcon } from "@/compon
 import { PhoneIcon } from "@/components/social/icons";
 import { toast } from "@/components/ui/Toast";
 import { APP_NAME } from "@/lib/brand";
-import { timeAgo } from "@/lib/dates";
+import { relativeDay, timeAgo } from "@/lib/dates";
 import {
   disconnectHealth,
   getHealthLink,
@@ -38,6 +38,44 @@ function useIsAndroidApp(): boolean {
 }
 
 const fmtDays = (n: number) => (n === 1 ? "1 dag" : `${n} dagen`);
+const fmtInt = (n: number) => n.toLocaleString("nl-NL");
+
+/** Wat Health Connect bij de laatste sync teruggaf, zodat je kunt zien of er wel data binnenkomt. */
+function SyncPreview({ preview }: { preview: { date: string; steps: number | null; kcal: number | null }[] }) {
+  if (!preview.length) return null;
+  const noSteps = preview.every((d) => d.steps == null || d.steps === 0);
+  return (
+    <div className="space-y-2">
+      <p className="font-semibold text-ink">Gevonden in Health Connect</p>
+      <ul className="divide-y divide-line rounded-xl bg-surface-2">
+        {preview.map((d) => (
+          <li key={d.date} className="flex items-center justify-between gap-3 px-3 py-2">
+            <span>{relativeDay(d.date)}</span>
+            <span className="tabular-nums text-ink">
+              {d.steps != null ? `${fmtInt(d.steps)} stappen` : "geen stappen"}
+              {d.kcal != null ? <span className="text-muted"> · {fmtInt(d.kcal)} kcal</span> : null}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {noSteps && (
+        <div className="space-y-1.5 rounded-xl border border-warn/40 p-3" role="status">
+          <p className="font-semibold text-ink">Health Connect heeft geen stappen voor deze dagen</p>
+          <p>{APP_NAME} kan alleen ophalen wat andere apps in Health Connect zetten. Controleer:</p>
+          <ol className="list-decimal space-y-1 pl-5">
+            <li>
+              Open Health Connect (knop hieronder) &gt; Gegevens en toegang &gt; Activiteit &gt; Stappen. Staan daar stappen van vandaag?
+            </li>
+            <li>Samsung: Samsung Health &gt; Instellingen &gt; Health Connect, en zet het delen van stappen aan.</li>
+            <li>Garmin: Garmin Connect &gt; Meer &gt; Instellingen &gt; Health Connect, en geef toegang tot stappen. Sync daarna je horloge.</li>
+            <li>Google Pixel: Fitbit of Google Health deelt via de Health Connect-instellingen van die app.</li>
+          </ol>
+          <p>Staan er daarna stappen in Health Connect, tik dan op Nu synchroniseren.</p>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /**
  * Rij "Health Connect" in Profiel > Koppelingen.
@@ -316,6 +354,7 @@ function NativeHealthConnectRow({
               </div>
             </dl>
           )}
+          {!stepsRevoked && link.lastSyncAt ? <SyncPreview preview={link.lastSyncPreview} /> : null}
           {perms && perms.steps && !perms.calories && (
             <p>Alleen stappen worden opgehaald. Wil je ook actieve kcal, zet dat dan aan in Health Connect.</p>
           )}
