@@ -11,13 +11,14 @@ import { ProgressBodyweight } from "@/components/ProgressBodyweight";
 import { WeeklyVolume } from "@/components/WeeklyVolume";
 import { formatDate, toISODate } from "@/lib/dates";
 import { EXERCISE_BY_SLUG } from "@/lib/exercises";
-import { fetchHistory, formatSet, nl, sessionsBySlug, type HistorySet, type Session } from "@/lib/history";
+import { formatSet, nl, sessionsBySlug, useHistory, type HistorySet, type Session } from "@/lib/history";
 import { estimate1RM } from "@/lib/ranks";
 import { supabase } from "@/lib/supabase";
 
 export default function ProgressPage() {
   const userId = useUserId();
-  const [history, setHistory] = useState<HistorySet[] | null>(null);
+  // Gedeelde, gecachete geschiedenis: direct zichtbaar als je eerder op Home of Ranks was.
+  const history = useHistory(userId) ?? null;
   const [month, setMonth] = useState(() => {
     const d = new Date();
     return new Date(d.getFullYear(), d.getMonth(), 1);
@@ -25,10 +26,6 @@ export default function ProgressPage() {
   const [planned, setPlanned] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<string | null>(null);
   const [exercise, setExercise] = useState<string | null>(null);
-
-  useEffect(() => {
-    fetchHistory(userId).then(setHistory);
-  }, [userId]);
 
   // Geplande groepstrainingen in de getoonde maand.
   useEffect(() => {

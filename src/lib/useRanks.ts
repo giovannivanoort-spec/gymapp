@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
+import { useHistory } from "./history";
 import { aggregateRanks, rankExercise, type ExerciseRank, type LogLike, type Sex } from "./ranks";
 import { supabase } from "./supabase";
 
@@ -37,18 +38,18 @@ export function rankAll(logs: Map<string, LogLike[]>, bodyweight: number | null,
     .sort((a, b) => b.score - a.score);
 }
 
-/** Ranks van één persoon; `null` zolang er geladen wordt. */
+/**
+ * Ranks van één persoon; `null` zolang er geladen wordt. Gebruikt de gedeelde (gecachete)
+ * trainingsgeschiedenis, zodat Home, Profiel, Oefeningen en Ranks niet elk opnieuw laden.
+ */
 export function useRanks(userId: string | null, bodyweight: number | null, sex: Sex | null, age?: number | null) {
-  const [logs, setLogs] = useState<Map<string, LogLike[]> | null>(null);
-
-  useEffect(() => {
-    if (!userId) return;
-    fetchLogsBySlug(userId).then(setLogs);
-  }, [userId]);
+  const history = useHistory(userId);
 
   return useMemo(() => {
-    if (!logs) return null;
+    if (!history) return null;
+    const logs = new Map<string, LogLike[]>();
+    for (const s of history) logs.set(s.slug, [...(logs.get(s.slug) ?? []), { weight: s.weight, reps: s.reps }]);
     const ranks = rankAll(logs, bodyweight, sex, age);
     return { logs, ranks, ...aggregateRanks(ranks) };
-  }, [logs, bodyweight, sex, age]);
+  }, [history, bodyweight, sex, age]);
 }

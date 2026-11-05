@@ -4,6 +4,7 @@ import type { Session } from "@supabase/supabase-js";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { clearCache, getCached, setCached } from "@/lib/cache";
 import { supabase, supabaseConfigured } from "@/lib/supabase";
 import type { Profile } from "@/lib/types";
 import { OfflineSync } from "./OfflineSync";
@@ -35,19 +36,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const loadProfile = useCallback(async (userId: string | undefined) => {
     if (!userId) return setProfile(null);
     const { data } = await supabase.from("profiles").select("*").eq("id", userId).single();
+    if (data) setCached(`profile:${userId}`, data, true);
     setProfile(data);
   }, []);
 
   useEffect(() => {
     if (!supabaseConfigured) return;
     supabase.auth.getSession().then(async ({ data }) => {
+      const uid = data.session?.user.id;
       setSession(data.session);
-      await loadProfile(data.session?.user.id);
-      setLoading(false);
+      // Bekend profiel van een vorige keer: app direct tonen en op de achtergrond verversen.
+      const cached = uid ? getCached<Profile>(`profile:${uid}`) : undefined;
+      if (cached) {
+        setProfile(cached);
+        setLoading(false);
+        loadProfile(uid);
+      } else {
+        await loadProfile(uid);
+        setLoading(false);
+      }
     });
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
+      // De eerste sessie is hierboven al afgehandeld.
+      if (event === "INITIAL_SESSION") return;
+      if (event === "SIGNED_OUT") clearCache();
       setSession(s);
-      loadProfile(s?.user.id);
+      if (event !== "TOKEN_REFRESHED") loadProfile(s?.user.id);
     });
     return () => sub.subscription.unsubscribe();
   }, [loadProfile]);

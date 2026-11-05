@@ -31,7 +31,7 @@ body {
 @keyframes fade-up {
   from {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(6px);
   }
   to {
     opacity: 1;
@@ -107,17 +107,17 @@ body {
 /* fill-mode "backwards": na afloop blijft er geen transform hangen (die zou position: fixed
    van pop-ups binnen de pagina aan de pagina vastzetten in plaats van aan het scherm). */
 @utility animate-fade-up {
-  animation: fade-up 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
-  animation-delay: calc(var(--i, 0) * 45ms);
+  animation: fade-up 0.25s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+  animation-delay: calc(var(--i, 0) * 25ms);
 }
 @utility animate-fade-in {
-  animation: fade-in 0.3s ease-out backwards;
+  animation: fade-in 0.2s ease-out backwards;
 }
 @utility animate-scale-in {
-  animation: scale-in 0.35s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+  animation: scale-in 0.25s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
 }
 @utility animate-sheet-up {
-  animation: sheet-up 0.38s cubic-bezier(0.2, 0.9, 0.25, 1) backwards;
+  animation: sheet-up 0.3s cubic-bezier(0.2, 0.9, 0.25, 1) backwards;
 }
 @utility animate-pop {
   animation: pop 0.35s ease-out;

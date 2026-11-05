@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { useAuth, useUserId } from "@/components/AuthProvider";
 import { Sheet } from "@/components/Sheet";
@@ -14,7 +14,8 @@ import { RankBadge, TierProgress } from "@/components/RankBadge";
 import { TIERS } from "@/lib/ranks";
 import { useRanks } from "@/lib/useRanks";
 import { ageFrom } from "@/lib/dates";
-import { fetchTrainedDays } from "@/lib/week";
+import { useCached } from "@/lib/cache";
+import { useHistory } from "@/lib/history";
 import { WeekGoal } from "@/components/WeekGoal";
 
 type MyGroup = Group & { role: Role; memberCount: number };
@@ -24,41 +25,47 @@ export default function HomePage() {
   const { profile } = useAuth();
   const userId = useUserId();
   const router = useRouter();
-  const [groups, setGroups] = useState<MyGroup[] | null>(null);
-  const [workouts, setWorkouts] = useState<UpcomingWorkout[]>([]);
   const [newOpen, setNewOpen] = useState(false);
   const [joinOpen, setJoinOpen] = useState(false);
-  const [trainedDays, setTrainedDays] = useState<Set<string> | null>(null);
   const ranks = useRanks(userId, profile?.bodyweight_kg ?? null, profile?.sex ?? null, ageFrom(profile?.birth_date));
+  const history = useHistory(userId);
+  const trainedDays = useMemo(
+    () => (history ? new Set(history.filter((s) => (s.reps ?? 0) > 0).map((s) => s.date)) : null),
+    [history],
+  );
 
-  useEffect(() => {
-    fetchTrainedDays(userId).then(setTrainedDays);
-  }, [userId]);
-
-  useEffect(() => {
-    (async () => {
+  // Groepen en komende trainingen: tegelijk opgehaald en onthouden tussen bezoeken.
+  const groups = useCached(
+    `home:groups:${userId}`,
+    async () => {
       const { data: memberships } = await supabase
         .from("group_members")
         .select("role, groups(*, group_members(count))")
         .eq("user_id", userId);
-      setGroups(
-        (memberships ?? [])
-          .filter((m) => m.groups)
-          .map((m) => {
-            const g = m.groups as unknown as Group & { group_members: { count: number }[] };
-            return { ...g, role: m.role as Role, memberCount: g.group_members[0]?.count ?? 1 };
-          }),
-      );
+      return (memberships ?? [])
+        .filter((m) => m.groups)
+        .map((m) => {
+          const g = m.groups as unknown as Group & { group_members: { count: number }[] };
+          return { ...g, role: m.role as Role, memberCount: g.group_members[0]?.count ?? 1 } as MyGroup;
+        });
+    },
+    { persist: true },
+  ) ?? null;
+  const workouts =
+    useCached(
+      `home:workouts:${userId}`,
+      async () => {
+        const { data: w } = await supabase
+          .from("workouts")
+          .select("*, groups(name), workout_exercises(count)")
+          .gte("date", toISODate())
+          .order("date")
+          .limit(10);
+        return (w as UpcomingWorkout[]) ?? [];
+      },
+      { persist: true },
+    ) ?? [];
 
-      const { data: w } = await supabase
-        .from("workouts")
-        .select("*, groups(name), workout_exercises(count)")
-        .gte("date", toISODate())
-        .order("date")
-        .limit(10);
-      setWorkouts((w as UpcomingWorkout[]) ?? []);
-    })();
-  }, [userId]);
 
   const today = toISODate();
   const todays = workouts.filter((w) => w.date === today);

@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import { useCached } from "@/lib/cache";
 import { EXERCISE_BY_SLUG } from "@/lib/exercises";
 import { aggregateRanks, TIERS, type ExerciseRank, type LogLike } from "@/lib/ranks";
 import type { GroupMember } from "@/lib/types";
@@ -13,15 +14,16 @@ type MemberRanks = { member: GroupMember; ranks: ExerciseRank[] | null; overall:
 
 /** Ranglijst van een groep: totaal of per oefening. */
 export function GroupLeaderboard({ members, userId }: { members: GroupMember[]; userId: string }) {
-  const [logs, setLogs] = useState<Map<string, Map<string, LogLike[]>> | null>(null);
   const [selected, setSelected] = useState<string>("overall");
   const memberKey = members.map((m) => m.user_id).join();
 
-  useEffect(() => {
-    if (!memberKey) return;
-    const ids = memberKey.split(",");
-    Promise.all(ids.map((id) => fetchLogsBySlug(id))).then((all) => setLogs(new Map(ids.map((id, i) => [id, all[i]]))));
-  }, [memberKey]);
+  // Sets van alle leden tegelijk; onthouden zodat terugkeren naar de groep direct de ranglijst toont.
+  const logs =
+    useCached(memberKey ? `leaderboard:${memberKey}` : null, async () => {
+      const ids = memberKey.split(",");
+      const all = await Promise.all(ids.map((id) => fetchLogsBySlug(id)));
+      return new Map<string, Map<string, LogLike[]>>(ids.map((id, i) => [id, all[i]]));
+    }, { maxAge: 30_000 }) ?? null;
 
   const data: MemberRanks[] = useMemo(
     () =>

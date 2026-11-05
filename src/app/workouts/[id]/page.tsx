@@ -15,6 +15,8 @@ import { errorMessage, supabase } from "@/lib/supabase";
 import { fetchLogsBySlug } from "@/lib/useRanks";
 import { suggestNext } from "@/lib/progression";
 import { postActivity } from "@/lib/activities";
+import { invalidate } from "@/lib/cache";
+import { invalidateHistory } from "@/lib/history";
 import { enqueue, isNetworkError, SYNCED_EVENT } from "@/lib/offlineQueue";
 import { PlateCalculator } from "@/components/PlateCalculator";
 import type { Comment, GroupMember, SetLog, Workout, WorkoutExercise } from "@/lib/types";
@@ -120,6 +122,9 @@ export default function WorkoutPage() {
 
   const onLogged = useCallback(
     (slug: string, weight: number | null, reps: number | null) => {
+      // Home, Ranks en Progressie halen de nieuwe set bij het volgende bezoek op.
+      invalidateHistory(forUser);
+      invalidate("leaderboard:");
       if (!allLogs) return;
       const member = members.find((m) => m.user_id === forUser);
       const bw = member?.profiles?.bodyweight_kg ?? null;

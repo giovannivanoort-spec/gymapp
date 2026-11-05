@@ -1,5 +1,6 @@
 "use client";
 
+import { invalidate, useCached } from "./cache";
 import { estimate1RM } from "./ranks";
 import { supabase } from "./supabase";
 
@@ -120,3 +121,16 @@ export function formatSet(s: { weight: number | null; reps: number | null }): st
 }
 
 export const nl = (n: number, digits = 1) => n.toLocaleString("nl-NL", { maximumFractionDigits: digits });
+
+/**
+ * Alle gelogde sets van één persoon, gedeeld tussen pagina's (Home, Profiel, Ranks, Oefeningen,
+ * Progressie). Toont direct de vorige stand en ververst op de achtergrond.
+ */
+export function useHistory(userId: string | null): HistorySet[] | undefined {
+  return useCached(userId ? `history:${userId}` : null, () => fetchHistory(userId!), { persist: true, maxAge: 15_000 });
+}
+
+/** Na het loggen van sets: geschiedenis van deze persoon opnieuw laten ophalen. */
+export function invalidateHistory(userId: string) {
+  invalidate(`history:${userId}`);
+}
