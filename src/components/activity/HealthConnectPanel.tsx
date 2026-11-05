@@ -118,6 +118,7 @@ function NativeHealthConnectRow({
   const [availability, setAvailability] = useState<HealthAvailability | null>(null);
   const [perms, setPerms] = useState<HealthPermissions | null>(null);
   const [busy, setBusy] = useState<"connect" | "sync" | null>(null);
+  const [recheck, setRecheck] = useState(0);
   const connected = link.connected && consented;
 
   // Beschikbaarheid, en bij een koppeling de huidige rechten (die kunnen in Health Connect zijn ingetrokken).
@@ -142,7 +143,7 @@ function NativeHealthConnectRow({
       alive = false;
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [link.connected, link.lastSyncAt]);
+  }, [link.connected, link.lastSyncAt, recheck]);
 
   /** `afterConsent`: net toestemming gegeven, de prop `consented` is dan nog niet bijgewerkt. */
   async function connect(afterConsent = false) {
@@ -157,7 +158,13 @@ function NativeHealthConnectRow({
       const a = await healthAvailability();
       setAvailability(a);
       if (a.status !== "available") {
-        toast.error(a.status === "needs_install" ? "Installeer of werk eerst Health Connect bij." : "Health Connect werkt niet op dit toestel.");
+        toast.error(
+          a.status === "needs_install"
+            ? "Installeer of werk eerst Health Connect bij."
+            : a.status === "error"
+              ? (a.reason ?? "Health Connect kon niet worden gecontroleerd. Probeer het opnieuw.")
+              : "Health Connect werkt niet op dit toestel.",
+        );
         return;
       }
       const p = await requestHealthPermissions();
@@ -218,6 +225,8 @@ function NativeHealthConnectRow({
     <StatusPill tone="warn">Installeren</StatusPill>
   ) : status === "unsupported" ? (
     <StatusPill>Niet beschikbaar</StatusPill>
+  ) : status === "error" ? (
+    <StatusPill tone="warn">Geen antwoord</StatusPill>
   ) : stepsRevoked ? (
     <StatusPill tone="warn">Geen toegang</StatusPill>
   ) : connected ? (
@@ -243,6 +252,22 @@ function NativeHealthConnectRow({
           <a href={HEALTH_CONNECT_PLAY_URL} className="btn-ghost w-full text-xs">
             <ExternalIcon size={14} /> Health Connect in de Play Store
           </a>
+        </div>
+      )}
+
+      {status === "error" && (
+        <div className="space-y-2 text-xs text-muted">
+          <p>{availability?.reason ?? "Health Connect kon niet worden gecontroleerd."}</p>
+          <button
+            type="button"
+            className="btn-ghost w-full text-xs"
+            onClick={() => {
+              setAvailability(null);
+              setRecheck((n) => n + 1);
+            }}
+          >
+            <RefreshIcon size={14} /> Opnieuw controleren
+          </button>
         </div>
       )}
 

@@ -76,10 +76,33 @@ export function nativePlatform(): "android" | "ios" | "web" {
   return p === "android" || p === "ios" ? p : "web";
 }
 
-async function healthPlugin() {
+/**
+ * Laadt de plugin. Geeft hem bewust ingepakt terug ({ Health }) en nooit de plugin zelf: een
+ * Capacitor-plugin is een Proxy die voor élke eigenschap een native methode maakt, ook voor `then`.
+ * `await` op een async functie die de plugin zelf teruggeeft roept dan Health.then(...) native aan,
+ * en die belofte komt nooit terug (de app bleef zo hangen op "Controleren…").
+ */
+async function healthPlugin(): Promise<{ Health: typeof import("@capgo/capacitor-health").Health }> {
   if (!isNativeApp()) throw new Error("Health Connect werkt alleen in de Android-app.");
-  const { Health } = await import("@capgo/capacitor-health");
-  return Health;
+  const mod = await import("@capgo/capacitor-health");
+  return { Health: mod.Health };
+}
+
+/** Native aanroepen mogen nooit eeuwig blijven hangen: na `ms` een duidelijke fout. */
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`Health Connect reageert niet (${what}). Probeer het opnieuw.`)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
 }
 
 /** Korte Nederlandse melding voor een toast. De plugin meldt fouten in het Engels; de server al in het Nederlands. */
@@ -101,8 +124,9 @@ export type HealthAvailability = {
    * available: Health Connect is er en werkt.
    * needs_install: Health Connect moet geïnstalleerd of bijgewerkt worden (Android 13 en ouder).
    * unsupported: kan niet op dit toestel (of niet in de app).
+   * error: controleren mislukte (bijv. geen antwoord); opnieuw proberen kan helpen.
    */
-  status: "available" | "needs_install" | "unsupported";
+  status: "available" | "needs_install" | "unsupported" | "error";
   reason?: string;
 };
 
@@ -112,13 +136,13 @@ export const HEALTH_CONNECT_PLAY_URL = "https://play.google.com/store/apps/detai
 export async function healthAvailability(): Promise<HealthAvailability> {
   if (nativePlatform() !== "android") return { status: "unsupported" };
   try {
-    const Health = await healthPlugin();
-    const r = await Health.isAvailable();
+    const { Health } = await withTimeout(healthPlugin(), 15_000, "laden");
+    const r = await withTimeout(Health.isAvailable(), 8_000, "beschikbaarheid");
     if (r.available) return { status: "available" };
     if (/update/i.test(r.reason ?? "")) return { status: "needs_install", reason: r.reason };
     return { status: "unsupported", reason: r.reason };
   } catch (err) {
-    return { status: "unsupported", reason: err instanceof Error ? err.message : undefined };
+    return { status: "error", reason: err instanceof Error ? err.message : undefined };
   }
 }
 
@@ -134,22 +158,23 @@ function toPermissions(readAuthorized: readonly string[] | undefined): HealthPer
 
 /** Huidige rechten, zonder iets te vragen. */
 export async function healthPermissions(): Promise<HealthPermissions> {
-  const Health = await healthPlugin();
-  const r = await Health.checkAuthorization({ read: [...READ_TYPES], write: [] });
+  const { Health } = await withTimeout(healthPlugin(), 15_000, "laden");
+  const r = await withTimeout(Health.checkAuthorization({ read: [...READ_TYPES], write: [] }), 10_000, "rechten");
   return toPermissions(r.readAuthorized);
 }
 
 /** Toont het rechtenscherm van Health Connect (stappen en actieve kcal, alleen lezen). */
 export async function requestHealthPermissions(): Promise<HealthPermissions> {
-  const Health = await healthPlugin();
+  const { Health } = await withTimeout(healthPlugin(), 15_000, "laden");
+  // Geen time-out: hier wacht de app op de keuze van de gebruiker in het rechtenscherm.
   const r = await Health.requestAuthorization({ read: [...READ_TYPES], write: [] });
   return toPermissions(r.readAuthorized);
 }
 
 /** Opent de instellingen van Health Connect (rechten, app-prioriteit, gegevens). */
 export async function openHealthConnectSettings(): Promise<void> {
-  const Health = await healthPlugin();
-  await Health.openHealthConnectSettings();
+  const { Health } = await withTimeout(healthPlugin(), 15_000, "laden");
+  await withTimeout(Health.openHealthConnectSettings(), 10_000, "instellingen openen");
 }
 
 // ─────────────── Koppeling op dit toestel ───────────────
@@ -289,16 +314,20 @@ function segments(days: DayRange[]): { start: Date; end: Date }[] {
 
 /** Som per lokale dag voor één gegevenstype ("steps" of "calories"). */
 async function dailySums(dataType: "steps" | "calories", days: DayRange[]): Promise<Map<string, number>> {
-  const Health = await healthPlugin();
+  const { Health } = await withTimeout(healthPlugin(), 15_000, "laden");
   const sums = new Map<string, number>();
   for (const seg of segments(days)) {
-    const { samples } = await Health.queryAggregated({
-      dataType,
-      startDate: seg.start.toISOString(),
-      endDate: seg.end.toISOString(),
-      bucket: "day",
-      aggregation: "sum",
-    });
+    const { samples } = await withTimeout(
+      Health.queryAggregated({
+        dataType,
+        startDate: seg.start.toISOString(),
+        endDate: seg.end.toISOString(),
+        bucket: "day",
+        aggregation: "sum",
+      }),
+      30_000,
+      "gegevens ophalen",
+    );
     for (const s of samples ?? []) {
       const value = s.values?.sum ?? s.value;
       if (typeof value !== "number" || !Number.isFinite(value)) continue;
