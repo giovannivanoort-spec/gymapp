@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { MUSCLE_BY_ID, type MuscleId } from "@/lib/muscles";
 
 /**
@@ -85,18 +86,38 @@ function mirror(points: string): string {
     .join(" ");
 }
 
-const COLOR = {
+/**
+ * Kleuren van de spierkaart; ook gebruikt voor legenda's, spierchips en lijstjes met spieren.
+ * Eén taal door de hele app: hoofdspier = accent (lime), helpt mee = gedempt accent,
+ * en de heatmap loopt van "niet getraind" naar hetzelfde accent.
+ */
+export const MUSCLE_COLOR = {
   skin: "#2a303a",
   idle: "#434c5b",
-  primary: "#ff4d5e",
-  secondary: "#ffa24a",
+  primary: "#c8f53a",
+  secondary: "#7f984c",
   outline: "#0b0d10",
 };
+const COLOR = MUSCLE_COLOR;
 
-/** Mengt de "niet getraind"-kleur met rood, t = 0..1. */
+const FRONT_IDS = new Set(FRONT.flatMap((s) => s.muscles));
+const BACK_IDS = new Set(BACK.flatMap((s) => s.muscles));
+
+/** Welke kant de hoofdspieren het best laat zien (voor kleine plaatjes met één figuur). */
+export function bestSide(primary: MuscleId[]): "front" | "back" {
+  const front = primary.filter((m) => FRONT_IDS.has(m)).length;
+  const back = primary.filter((m) => BACK_IDS.has(m)).length;
+  return back > front ? "back" : "front";
+}
+
+function names(ids: MuscleId[]) {
+  return ids.map((m) => MUSCLE_BY_ID[m].short).join(", ");
+}
+
+/** Mengt de "niet getraind"-kleur met het accent (zelfde kleur als een hoofdspier), t = 0..1. */
 function heat(t: number): string {
   const a = [0x43, 0x4c, 0x5b];
-  const b = [0xff, 0x4d, 0x5e];
+  const b = [0xc8, 0xf5, 0x3a];
   const c = a.map((v, i) => Math.round(v + (b[i] - v) * Math.min(1, Math.max(0, t))));
   return `rgb(${c.join(",")})`;
 }
@@ -108,9 +129,21 @@ type Props = {
   intensity?: Partial<Record<MuscleId, number>>;
   className?: string;
   labels?: boolean;
+  /** Beide figuren (standaard), of alleen voor- of achterkant ("auto" kiest de kant met de hoofdspieren). */
+  view?: "both" | "front" | "back" | "auto";
+  /** Verberg voor schermlezers, bijv. als dezelfde info al als tekst naast het plaatje staat. */
+  decorative?: boolean;
 };
 
-export function BodyMap({ primary = [], secondary = [], intensity, className = "", labels = true }: Props) {
+export const BodyMap = memo(function BodyMap({
+  primary = [],
+  secondary = [],
+  intensity,
+  className = "",
+  labels = true,
+  view = "both",
+  decorative,
+}: Props) {
   function fill(muscles: MuscleId[]) {
     if (intensity) {
       const t = Math.max(0, ...muscles.map((m) => intensity[m] ?? 0));
@@ -151,15 +184,48 @@ export function BodyMap({ primary = [], secondary = [], intensity, className = "
     );
   }
 
+  const side = view === "auto" ? bestSide(primary) : view;
+  const h = labels ? 422 : 400;
+
+  let label: string;
+  if (intensity) {
+    const top = (Object.entries(intensity) as [MuscleId, number][])
+      .filter(([, v]) => (v ?? 0) > 0)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([m]) => m);
+    label = top.length ? `Spierkaart, meest belast: ${names(top)}` : "Spierkaart, nog geen spieren belast";
+  } else {
+    label = `Spierkaart. Hoofdspieren: ${names(primary) || "geen"}${secondary.length ? `; helpen mee: ${names(secondary)}` : ""}`;
+  }
+  const a11y = decorative ? { "aria-hidden": true as const } : { role: "img", "aria-label": label };
+
+  if (side === "front" || side === "back") {
+    return (
+      <svg viewBox={`0 0 ${W} ${h}`} className={className} {...a11y}>
+        {side === "front" ? figure(FRONT, 0, "Voorkant") : figure(BACK, 0, "Achterkant")}
+      </svg>
+    );
+  }
+
   return (
-    <svg viewBox={`0 0 ${W * 2 + 20} ${labels ? 422 : 400}`} className={className} role="img" aria-label="Spierkaart">
+    <svg viewBox={`0 0 ${W * 2 + 20} ${h}`} className={className} {...a11y}>
       {figure(FRONT, 0, "Voorkant")}
       {figure(BACK, W + 20, "Achterkant")}
     </svg>
   );
-}
+});
 
-export function BodyMapLegend() {
+export function BodyMapLegend({ heat: heatLegend }: { heat?: boolean } = {}) {
+  if (heatLegend) {
+    return (
+      <div className="flex items-center justify-center gap-2 text-xs text-muted" aria-hidden>
+        <span>Weinig</span>
+        <span className="h-2 w-20 rounded-full" style={{ background: `linear-gradient(90deg, ${heat(0.25)}, ${heat(1)})` }} />
+        <span>Veel</span>
+      </div>
+    );
+  }
   return (
     <div className="flex justify-center gap-4 text-xs text-muted">
       <span className="flex items-center gap-1.5">

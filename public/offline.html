@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b0d10" />
+    <meta name="robots" content="noindex" />
+    <title>Geen verbinding · Spotter</title>
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b0d10;
+        --surface: #15181d;
+        --surface-2: #1d2128;
+        --line: #2a2f37;
+        --ink: #eceef1;
+        --muted: #9aa1ab;
+        --accent: #c8f53a;
+        --accent-ink: #12160a;
+        --warn: #ffc857;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+      }
+      body {
+        min-height: 100dvh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: max(1.5rem, env(safe-area-inset-top)) 1rem max(1.5rem, env(safe-area-inset-bottom));
+        background:
+          radial-gradient(1200px 500px at 50% -200px, rgba(200, 245, 58, 0.07), transparent 70%),
+          var(--bg);
+        color: var(--ink);
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        -webkit-text-size-adjust: 100%;
+        -webkit-tap-highlight-color: transparent;
+      }
+      main {
+        width: 100%;
+        max-width: 22rem;
+        padding: 1.5rem;
+        border: 1px solid var(--line);
+        border-radius: 1.25rem;
+        background: var(--surface);
+        text-align: center;
+        animation: fade-up 0.35s ease-out backwards;
+      }
+      .mark {
+        width: 3rem;
+        height: 3rem;
+        margin: 0 auto 1rem;
+        display: grid;
+        place-items: center;
+        border-radius: 999px;
+        background: var(--surface-2);
+        color: var(--warn);
+      }
+      h1 {
+        margin: 0 0 0.5rem;
+        font-size: 1.125rem;
+        line-height: 1.3;
+      }
+      p {
+        margin: 0;
+        font-size: 0.875rem;
+        line-height: 1.5;
+        color: var(--muted);
+      }
+      .actions {
+        margin-top: 1.25rem;
+        display: grid;
+        gap: 0.5rem;
+      }
+      button,
+      a.btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 2.75rem;
+        padding: 0 1rem;
+        border-radius: 0.75rem;
+        font: inherit;
+        font-size: 0.9rem;
+        font-weight: 600;
+        text-decoration: none;
+        cursor: pointer;
+        transition: transform 0.1s ease, filter 0.15s ease;
+      }
+      button:active,
+      a.btn:active {
+        transform: scale(0.97);
+      }
+      button {
+        border: 0;
+        background: var(--accent);
+        color: var(--accent-ink);
+      }
+      button:disabled {
+        opacity: 0.6;
+      }
+      a.btn {
+        border: 1px solid var(--line);
+        background: var(--surface-2);
+        color: var(--ink);
+      }
+      :focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+      .status {
+        margin-top: 1rem;
+        font-size: 0.75rem;
+        min-height: 1em;
+      }
+      @keyframes fade-up {
+        from {
+          opacity: 0;
+          transform: translateY(6px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        main {
+          animation: none;
+        }
+        button,
+        a.btn {
+          transition: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="mark" aria-hidden="true">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M2 8.8a15 15 0 0 1 20 0" />
+          <path d="M5 12.5a10 10 0 0 1 14 0" />
+          <path d="M8.5 16.1a5 5 0 0 1 7 0" />
+          <path d="M12 20h.01" />
+          <path d="M3 3l18 18" />
+        </svg>
+      </div>
+      <h1>Geen verbinding</h1>
+      <p>Deze pagina is nog niet offline beschikbaar. Pagina's en trainingen die je eerder opende, werken wel zonder internet. Sets die je offline invult, worden later verstuurd.</p>
+      <div class="actions">
+        <button type="button" id="retry">Opnieuw proberen</button>
+        <a class="btn" href="/">Naar start</a>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+    </main>
+    <script>
+      (function () {
+        var retry = document.getElementById("retry");
+        var status = document.getElementById("status");
+        function reload() {
+          retry.disabled = true;
+          retry.textContent = "Bezig…";
+          location.reload();
+        }
+        retry.addEventListener("click", function () {
+          if (navigator.onLine === false) {
+            status.textContent = "Nog steeds offline. Zodra er verbinding is, laadt de pagina vanzelf.";
+            return;
+          }
+          reload();
+        });
+        // Verbinding terug: meteen de echte pagina laden.
+        window.addEventListener("online", reload);
+      })();
+    </script>
+  </body>
+</html>

@@ -1,6 +1,8 @@
   -- Vriendschappen: verzoeken via een persoonlijke vriendcode of vanuit je groep, en vrienden mogen
   -- elkaars trainingen, sets, ranks en lichaamsgewicht zien (voeding blijft privé).
   -- Plak dit in Supabase → SQL Editor → New query → Run (na de eerdere scripts). Veilig om opnieuw te draaien.
+  -- LET OP: draai dit script NIET opnieuw nadat supabase/upgrade-social.sql is gedraaid: dat zet de
+  -- oude (openbare) vriendcode-functies terug. Is het toch gebeurd, draai dan upgrade-social.sql nog een keer.
   
   -- ─────────────── Vriendcode ───────────────
   alter table public.profiles add column if not exists friend_code text;

@@ -8,7 +8,7 @@ import foods from "./foods-basis.json";
 const BASIS_FOODS = foods as Food[];
 
 /** Lowercase, zonder accenten/apostroffen, alleen letters en cijfers gescheiden door één spatie. */
-function normalize(s: string): string {
+export function normalizeText(s: string): string {
   return s
     .normalize("NFD")
     .replace(/[̀-ͯ]/g, "")
@@ -21,7 +21,7 @@ function normalize(s: string): string {
 type Entry = { food: Food; norm: string; words: string[] };
 
 const ENTRIES: Entry[] = BASIS_FOODS.map((food) => {
-  const norm = normalize(food.name);
+  const norm = normalizeText(food.name);
   return { food, norm, words: norm.split(" ") };
 });
 
@@ -34,7 +34,7 @@ const BY_ID = new Map<string, Food>(BASIS_FOODS.map((f) => [f.id, f]));
  * Bij meerdere woorden moeten alle woorden voorkomen. Kortere namen gaan voor bij gelijke rang.
  */
 export function searchBasisFoods(query: string, limit = 30): Food[] {
-  const q = normalize(query);
+  const q = normalizeText(query);
   if (!q || limit <= 0) return [];
   const qWords = q.split(" ");
 

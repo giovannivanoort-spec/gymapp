@@ -189,3 +189,14 @@ export const REGION_LABEL: Record<MuscleRegion, string> = {
   legs: "Benen",
   core: "Core",
 };
+
+/**
+ * Vaste kleur per regio (duwen/trekken/benen/core), voor de verdeling in de spieranalyse.
+ * Duwen gebruikt het accent; de andere drie zijn rustige, goed te onderscheiden tinten.
+ */
+export const REGION_COLOR: Record<MuscleRegion, string> = {
+  push: "#c8f53a",
+  pull: "#5cc8ff",
+  legs: "#ffa24a",
+  core: "#c792ff",
+};

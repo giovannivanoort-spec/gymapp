@@ -2,473 +2,316 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { useAuth, useUserId } from "@/components/AuthProvider";
 import { Avatar, ProfileButton } from "@/components/Avatar";
-import { FriendChip } from "@/components/FriendCard";
-import {
-  BookIcon,
-  ChevronRightIcon,
-  DumbbellIcon,
-  PlusIcon,
-  SparkleIcon,
-  TrophyIcon,
-  UserPlusIcon,
-  UsersIcon,
-} from "@/components/Icons";
-import { RankBadge, TierProgress } from "@/components/RankBadge";
-import { Sheet } from "@/components/Sheet";
-import { WeekGoal } from "@/components/WeekGoal";
-import { MACRO_COLORS } from "@/components/nutrition/MacroSummary";
-import { useCached } from "@/lib/cache";
-import { ageFrom, relativeDay, toISODate } from "@/lib/dates";
-import { useFriends } from "@/lib/friends";
-import { useHistory } from "@/lib/history";
-import { fetchLogs } from "@/lib/nutrition/log";
-import { computeTargets, type NutritionProfile } from "@/lib/nutrition/targets";
-import { sumMacros } from "@/lib/nutrition/types";
-import { TIERS } from "@/lib/ranks";
-import { errorMessage, supabase } from "@/lib/supabase";
+import { BookIcon, ChevronRightIcon, SparkleIcon } from "@/components/Icons";
+import { Portal } from "@/components/Portal";
+import { GroupChoiceSheet, JoinSheet, NewGroupSheet } from "@/components/home/GroupSheets";
+import { HomeFriends } from "@/components/home/HomeFriends";
+import { HomeGroups } from "@/components/home/HomeGroups";
+import { NutritionCard, fetchFoodWeek } from "@/components/home/NutritionCard";
+import { Onboarding } from "@/components/home/Onboarding";
+import { PlanStrip } from "@/components/home/PlanStrip";
+import { PullToRefresh } from "@/components/home/PullToRefresh";
+import { RankGoalCard } from "@/components/home/RankGoalCard";
+import { RestCard } from "@/components/home/RestCard";
+import { SyncNote, type HomeSyncStatus } from "@/components/home/SyncNote";
+import { TodaySession } from "@/components/home/TodaySession";
+import { WeekGoalSheet } from "@/components/home/WeekGoalSheet";
+import { WeekRecap } from "@/components/home/WeekRecap";
+import { WeekRecords } from "@/components/home/WeekRecords";
+import { fetchUpcoming } from "@/components/home/data";
+import { GREETINGS, refreshLive, strict, useClock, useRefreshOnResume, useSyncStatus } from "@/components/home/live";
+import { fetchCached, getCachedAt, useCachedState, type CachedState } from "@/lib/cache";
+import { ageFrom, toISODate } from "@/lib/dates";
+import { fetchFriends } from "@/lib/friends";
 import { fetchMyGroups, myGroupsKey } from "@/lib/groups";
-import type { Workout } from "@/lib/types";
-import { useRanks } from "@/lib/useRanks";
+import { fetchHistory } from "@/lib/history";
+import type { NutritionProfile } from "@/lib/nutrition/targets";
+import { aggregateRanks, type LogLike } from "@/lib/ranks";
+import { rankAll } from "@/lib/useRanks";
+import { parseISODate } from "@/lib/week";
 
-type UpcomingWorkout = Workout & { groups: { name: string } | null; workout_exercises: { count: number }[] };
+/**
+ * De volledige geschiedenis is groot (alle sets ooit). Na het loggen maakt de trainingspagina hem
+ * zelf ongeldig, en terugkeren naar de app of trek-om-te-verversen haalt hem ook opnieuw op; Home
+ * hoeft hem dus niet bij elk bezoek opnieuw te downloaden.
+ */
+const HISTORY_MAX_AGE = 5 * 60_000;
 
-function greeting() {
-  const h = new Date().getHours();
-  return h < 6 ? "Goedenacht" : h < 12 ? "Goedemorgen" : h < 18 ? "Goedemiddag" : "Goedenavond";
-}
-
-const QUICK = [
-  { href: "/exercises", label: "Oefeningen", icon: BookIcon },
-  { href: "/coach", label: "Coach", icon: SparkleIcon },
-  { href: "/ranks", label: "Ranks", icon: TrophyIcon },
-  { href: "/friends", label: "Vrienden", icon: UsersIcon },
-];
-
-const MACROS = [
-  ["protein", "Eiwit"],
-  ["carbs", "Koolh."],
-  ["fat", "Vet"],
-] as const;
+/** Zichtbaar wel of niet geladen: nog niets bekend en de laatste poging mislukte (niet tijdens een nieuwe poging). */
+const failedToLoad = (s: CachedState<unknown>) => s.data === undefined && !!s.error;
 
 export default function HomePage() {
-  const { profile } = useAuth();
+  const { profile, refreshProfile } = useAuth();
   const userId = useUserId();
   const router = useRouter();
+  const { today, part } = useClock();
+  // De dagwissel handelt deze pagina zelf af (hieronder), met de fetchers van de nieuwe dag. Daarom
+  // krijgt de hook een vaste waarde: anders ververst hij eerder, nog met de fetchers van gisteren.
+  useRefreshOnResume();
+  const liveStatus = useSyncStatus();
+
   const [newOpen, setNewOpen] = useState(false);
   const [joinOpen, setJoinOpen] = useState(false);
-  const ranks = useRanks(userId, profile?.bodyweight_kg ?? null, profile?.sex ?? null, ageFrom(profile?.birth_date));
-  const history = useHistory(userId);
-  const friends = useFriends(userId);
+  const [chooseOpen, setChooseOpen] = useState(false);
+  const [goalOpen, setGoalOpen] = useState(false);
+
+  // Alles via strikte fetchers: een mislukt verzoek (slecht bereik) laat de vorige gegevens staan.
+  // Per bron een eigen status, zodat een trage of mislukte bron alleen zijn eigen blok raakt.
+  const uid = userId || null;
+  const sources = [
+    { key: uid && `history:${uid}`, fetcher: strict("history", () => fetchHistory(userId)), maxAge: HISTORY_MAX_AGE },
+    { key: uid && `friends:${uid}`, fetcher: strict("friends", () => fetchFriends(userId)), maxAge: 15_000 },
+    // Dezelfde fetcher (en volgorde) als de rest van de app, die deze sleutel deelt.
+    { key: uid && myGroupsKey(uid), fetcher: strict("groups", () => fetchMyGroups(userId)), maxAge: 10_000 },
+    { key: uid && `home:workouts:${uid}`, fetcher: strict("workouts", () => fetchUpcoming(today)), maxAge: 10_000 },
+    { key: uid && `home:food-week:${uid}`, fetcher: strict("food", () => fetchFoodWeek(today)), maxAge: 10_000 },
+  ] as const;
+  const historyS = useCachedState(sources[0].key, sources[0].fetcher, { persist: true, maxAge: sources[0].maxAge });
+  const friendsS = useCachedState(sources[1].key, sources[1].fetcher, { persist: true, maxAge: sources[1].maxAge });
+  const groupsS = useCachedState(sources[2].key, sources[2].fetcher, { persist: true, maxAge: sources[2].maxAge });
+  const upcomingS = useCachedState(sources[3].key, sources[3].fetcher, { persist: true, maxAge: sources[3].maxAge });
+  const foodS = useCachedState(sources[4].key, sources[4].fetcher, { persist: true, maxAge: sources[4].maxAge });
+  const history = historyS.data;
+  const friends = friendsS.data;
+  const groups = groupsS.data;
+  const upcoming = upcomingS.data;
+
+  /** Alles verversen en wachten tot de gegevens van deze pagina binnen zijn (trek-om-te-verversen, "Opnieuw"). */
+  const refreshAll = () => {
+    refreshLive();
+    return Promise.allSettled(sources.map(({ key, fetcher }) => (key ? fetchCached<unknown>(key, fetcher, true) : null)));
+  };
+
+  // Een nieuwe dag terwijl de app open bleef: alles opnieuw ophalen, met de fetchers van vandaag
+  // (komende trainingen en eten hangen van de datum af). Een effect-event ziet altijd de nieuwste.
+  const onNewDay = useEffectEvent(() => {
+    refreshAll();
+  });
+  const seenDay = useRef(today);
+  useEffect(() => {
+    if (seenDay.current === today) return;
+    seenDay.current = today;
+    onNewDay();
+  }, [today]);
+
+  // Offline of verversen mislukt. Een offline kopie van de service worker (wel wifi, geen internet)
+  // zit in de status per sleutel van de cache en telt dus ook als offline.
+  const states = [historyS, friendsS, groupsS, upcomingS, foodS];
+  const anyOffline = states.some((s) => s.offline);
+  const anyError = states.some((s) => (s.error || s.stale) && !s.offline);
+  const status: HomeSyncStatus =
+    liveStatus === "offline" || anyOffline ? "offline" : liveStatus === "error" || anyError ? "error" : "ok";
+
+  const bodyweight = profile?.bodyweight_kg ?? null;
+  const sex = profile?.sex ?? null;
+  const age = ageFrom(profile?.birth_date);
+  const overall = useMemo(() => {
+    if (!history) return undefined;
+    const logs = new Map<string, LogLike[]>();
+    for (const s of history) {
+      const set = { weight: s.weight, reps: s.reps };
+      const list = logs.get(s.slug);
+      if (list) list.push(set);
+      else logs.set(s.slug, [set]);
+    }
+    return aggregateRanks(rankAll(logs, bodyweight, sex, age)).overall;
+  }, [history, bodyweight, sex, age]);
   const trainedDays = useMemo(
     () => (history ? new Set(history.filter((s) => (s.reps ?? 0) > 0).map((s) => s.date)) : null),
     [history],
   );
-  const today = toISODate();
+  // Vandaag gelogd, ook als het een training van een andere dag was (bijv. een ingehaalde training).
+  const loggedToday = useMemo(
+    () => !!history?.some((s) => (s.reps ?? 0) > 0 && !!s.createdAt && toISODate(new Date(s.createdAt)) === today),
+    [history, today],
+  );
 
-  // Groepen en komende trainingen: tegelijk opgehaald en onthouden tussen bezoeken.
-  const groups = useCached(myGroupsKey(userId), () => fetchMyGroups(userId), { persist: true }) ?? null;
-  const workouts =
-    useCached(
-      `home:workouts:${userId}`,
-      async () => {
-        // groups!inner: alleen trainingen van je eigen groepen (niet die van vrienden).
-        const { data: w } = await supabase
-          .from("workouts")
-          .select("*, groups!inner(name), workout_exercises(count)")
-          .gte("date", toISODate())
-          .order("date")
-          .limit(10);
-        return (w as UpcomingWorkout[]) ?? [];
-      },
-      { persist: true },
-    ) ?? [];
-  const food = useCached(`home:food:${userId}:${today}`, () => fetchLogs(today, today), { persist: true });
-  const targets = computeTargets(profile as NutritionProfile | null);
-  // Gepland eten telt pas mee als het bevestigd is.
-  const eaten = food ? sumMacros(food.filter((l) => !l.planned)) : null;
-  const plannedToday = food?.filter((l) => l.planned).length ?? 0;
-
+  // Gecachete lijst kan van gisteren zijn: altijd zelf op datum filteren.
+  const workouts = useMemo(() => (upcoming ?? []).filter((w) => w.date >= today), [upcoming, today]);
+  const plannedDays = useMemo(() => (upcoming ? new Set(workouts.map((w) => w.date)) : null), [upcoming, workouts]);
   const todays = workouts.filter((w) => w.date === today);
   const later = workouts.filter((w) => w.date !== today);
+  // Zonder training vandaag noemt de rustkaart de eerstvolgende al: die niet dubbel tonen.
+  const soon = todays.length ? later : later.slice(1);
+  const trainerGroups = groups?.filter((g) => g.role === "trainer") ?? [];
+  const isTrainerOf = (groupId: string) => trainerGroups.some((g) => g.id === groupId);
+  const planGroupId = trainerGroups[0]?.id ?? null;
+  // De rustkaart toont zelf "Training plannen" als er niets gepland is; anders zit die in de strook.
+  const stripPlanHref = planGroupId && (todays.length > 0 || later.length > 0) ? `/groups/${planGroupId}/plan` : null;
+
   const firstName = profile?.display_name?.split(" ")[0] ?? "";
   const incoming = friends?.incoming ?? [];
+  const profileDone = !!(profile?.bodyweight_kg && profile.sex);
+  const goal = profile?.weekly_goal ?? 3;
+  const dateLabel = parseISODate(today).toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" });
+  const trainHref = todays[0] ? `/workouts/${todays[0].id}` : later[0] ? `/workouts/${later[0].id}` : groups?.[0] ? `/groups/${groups[0].id}` : null;
+  const hasTrained = history ? history.some((s) => (s.reps ?? 0) > 0) : null;
+
+  // Hoe oud is wat we tonen? De oudste van de gegevens op deze pagina die er wel zijn.
+  const stamps = sources.map(({ key }) => (key ? getCachedAt(key) : -1)).filter((t) => t > 0);
+  const syncedAt = stamps.length ? Math.min(...stamps) : null;
+
+  const onboarding = (
+    <Onboarding
+      profileDone={profileDone}
+      hasGroup={groups ? groups.length > 0 : null}
+      hasFriend={friends ? friends.friends.length > 0 : null}
+      hasTrained={hasTrained}
+      trainHref={trainHref}
+      onGroup={() => setChooseOpen(true)}
+    />
+  );
+
+  const todayBlock =
+    todays.length > 0 ? (
+      <section className="space-y-3" aria-label="Training van vandaag">
+        {todays.map((w, i) => (
+          <TodaySession key={w.id} w={w} index={i} userId={userId} isTrainer={isTrainerOf(w.group_id)} history={history} />
+        ))}
+      </section>
+    ) : (
+      <RestCard
+        loading={upcoming === undefined}
+        failed={failedToLoad(upcomingS)}
+        trainedToday={loggedToday}
+        next={later[0] ?? null}
+        planGroupId={planGroupId}
+        onRetry={refreshAll}
+      />
+    );
 
   return (
     <AppShell>
-      <div className="space-y-7 pt-[env(safe-area-inset-top)]">
-        <header className="flex items-center gap-3">
+      {/* Achtergrond onder de iOS-statusbalk, zodat kaarten er niet onderdoor scrollen. */}
+      <Portal>
+        <div aria-hidden className="pointer-events-none fixed inset-x-0 top-0 z-20 h-[env(safe-area-inset-top)] bg-bg/90 backdrop-blur" />
+      </Portal>
+      <PullToRefresh onRefresh={refreshAll} />
+
+      <div className="space-y-6 pt-[env(safe-area-inset-top)]">
+        <header className="flex items-start gap-2">
           <div className="min-w-0 flex-1">
-            <p className="text-sm capitalize text-muted">
-              {new Date().toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" })}
-            </p>
-            <h1 className="truncate text-[28px] font-extrabold leading-tight tracking-tight">
-              {greeting()}
-              {firstName && <span className="text-accent">, {firstName}</span>}
+            <p className="text-sm capitalize text-muted">{dateLabel}</p>
+            <h1 className="break-words text-[26px] font-extrabold leading-[1.15] tracking-tight sm:text-[28px]">
+              {GREETINGS[part]}
+              {firstName && (
+                <>
+                  ,<span className="block text-accent sm:ml-[0.25em] sm:inline">{firstName}</span>
+                </>
+              )}
             </h1>
           </div>
-          <Link
-            href="/coach"
-            aria-label="Coach"
-            className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-full border border-line bg-surface text-accent transition hover:border-muted active:scale-95"
-          >
-            <SparkleIcon size={18} />
-          </Link>
-          <Link
-            href="/friends"
-            aria-label="Vrienden"
-            className="relative flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-full border border-line bg-surface text-muted transition hover:text-ink active:scale-95"
-          >
-            <UsersIcon size={18} />
-            {incoming.length > 0 && (
-              <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 text-[10px] font-bold text-accent-ink">
-                {incoming.length}
+          <div className="flex shrink-0 items-center">
+            <Link href="/coach" aria-label="Coach" className="group -my-1.5 flex h-11 w-11 items-center justify-center rounded-full">
+              <span className="flex h-[34px] w-[34px] items-center justify-center rounded-full border border-line bg-surface text-accent transition group-hover:border-muted group-active:scale-95">
+                <SparkleIcon size={18} />
               </span>
-            )}
-          </Link>
-          <ProfileButton id={userId} name={profile?.display_name ?? ""} />
+            </Link>
+            <ProfileButton id={userId} name={profile?.display_name ?? ""} />
+          </div>
         </header>
 
-        {/* De training van vandaag staat bovenaan: daar open je de app meestal voor. */}
-        {todays.length > 0 && (
-          <section className="space-y-2">
-            {todays.map((w, i) => (
-              <TodayCard key={w.id} w={w} index={i} />
-            ))}
-          </section>
+        {status !== "ok" && (
+          <SyncNote status={status} syncedAt={syncedAt} today={today} canRetry={liveStatus !== "offline"} onRetry={refreshAll} />
         )}
 
-        <section className="card animate-scale-in relative overflow-hidden p-0">
-          {ranks?.overall && (
-            <div
-              className="pointer-events-none absolute -right-16 -top-16 h-48 w-48 rounded-full opacity-25 blur-3xl"
-              style={{ background: ranks.overall.tier.from }}
-            />
-          )}
-          <Link href="/ranks" className="relative flex items-center gap-4 p-4">
-            {ranks?.overall ? (
-              <RankBadge tierIndex={TIERS.indexOf(ranks.overall.tier)} size={64} glow />
-            ) : (
-              <RankBadge tierIndex={0} size={64} className="opacity-25 grayscale" />
-            )}
-            <div className="min-w-0 flex-1 space-y-1.5">
-              <p className="text-xs font-semibold uppercase tracking-wide text-muted">Totaalrang</p>
-              <p className="text-xl font-bold" style={ranks?.overall ? { color: ranks.overall.tier.to } : undefined}>
-                {ranks === null
-                  ? "…"
-                  : ranks.overall
-                    ? ranks.overall.tier.name
-                    : profile?.bodyweight_kg && profile.sex
-                      ? "Nog geen rang"
-                      : "Vul je profiel aan"}
-              </p>
-              {ranks?.overall && (
-                <TierProgress tierIndex={TIERS.indexOf(ranks.overall.tier)} progress={ranks.overall.score % 1} />
-              )}
-            </div>
-            <ChevronRightIcon className="text-muted" />
+        {incoming.length > 0 && (
+          <Link href="/friends" className="card animate-fade-up flex items-center gap-3 border-accent/40 bg-accent/5 p-3">
+            <Avatar id={incoming[0].id} name={incoming[0].display_name} size={32} />
+            <p className="min-w-0 flex-1 text-sm">
+              <span className="font-semibold">{incoming[0].display_name}</span>
+              {incoming.length > 1
+                ? ` en ${incoming.length - 1} ${incoming.length === 2 ? "ander willen" : "anderen willen"}`
+                : " wil"}{" "}
+              je vriend worden
+            </p>
+            <span className="rounded-full bg-accent px-2 py-0.5 text-[11px] font-bold text-accent-ink">Bekijk</span>
           </Link>
-          <div className="relative border-t border-line">
-            <WeekGoal days={trainedDays} goal={profile?.weekly_goal ?? 3} />
-          </div>
-        </section>
-
-        <nav className="grid grid-cols-4 gap-2">
-          {QUICK.map(({ href, label, icon: Icon }, i) => (
-            <Link
-              key={href}
-              href={href}
-              className="card animate-fade-up flex flex-col items-center gap-2 px-1 py-3 text-center transition hover:border-muted active:scale-95"
-              style={{ "--i": i } as React.CSSProperties}
-            >
-              <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-surface-2 text-accent">
-                <Icon size={20} />
-              </span>
-              <span className="text-[11px] font-semibold">{label}</span>
-            </Link>
-          ))}
-        </nav>
-
-        {todays.length === 0 && (
-          <section className="space-y-3">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">Vandaag</h2>
-            <div className="card flex items-center gap-3">
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-surface-2 text-muted">
-                <DumbbellIcon size={20} />
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold">Geen training gepland</p>
-                <p className="truncate text-xs text-muted">
-                  {later[0] ? (
-                    <>
-                      Volgende: {later[0].title}, {relativeDay(later[0].date).toLowerCase()}
-                    </>
-                  ) : (
-                    "Plan er een vanuit je groep."
-                  )}
-                </p>
-              </div>
-            </div>
-          </section>
         )}
 
-        <Link href="/nutrition" className="card animate-fade-up block space-y-3 hover:border-muted">
-          <div className="flex items-center justify-between">
-            <p className="text-sm font-semibold uppercase tracking-wide text-muted">Voeding vandaag</p>
-            <span className="flex items-center gap-2">
-              {plannedToday > 0 && (
-                <span className="rounded-full bg-accent/15 px-2 py-0.5 text-[11px] font-semibold text-accent">
-                  {plannedToday} te bevestigen
-                </span>
-              )}
-              <ChevronRightIcon className="text-muted" />
-            </span>
-          </div>
-          {!eaten ? (
-            <div className="skeleton h-16" />
-          ) : (
-            <>
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-2xl font-extrabold tabular-nums">{Math.round(eaten.kcal).toLocaleString("nl-NL")}</span>
-                <span className="text-sm text-muted">{targets ? <>/ {targets.kcal.toLocaleString("nl-NL")} kcal</> : "kcal"}</span>
-              </div>
-              {targets && (
-                <div className="h-2 overflow-hidden rounded-full bg-surface-2">
-                  <div
-                    className={`h-full rounded-full ${eaten.kcal > targets.kcal ? "bg-warn" : "bg-accent"}`}
-                    style={{
-                      width: `${Math.min(100, (eaten.kcal / targets.kcal) * 100)}%`,
-                      transition: "width 0.8s cubic-bezier(0.2,0.8,0.2,1)",
-                    }}
-                  />
-                </div>
-              )}
-              <div className="grid grid-cols-3 gap-3">
-                {MACROS.map(([k, label]) => (
-                  <div key={k} className="space-y-1">
-                    <div className="flex items-baseline justify-between text-xs">
-                      <span className="text-muted">{label}</span>
-                      <span className="font-semibold tabular-nums">
-                        {Math.round(eaten[k])}
-                        {targets && <span className="font-normal text-muted">/{targets[k]}</span>}g
-                      </span>
-                    </div>
-                    <div className="h-1 overflow-hidden rounded-full bg-surface-2">
-                      <div
-                        className="h-full rounded-full"
-                        style={{
-                          width: `${targets ? Math.min(100, (eaten[k] / targets[k]) * 100) : 0}%`,
-                          background: MACRO_COLORS[k],
-                          transition: "width 0.8s cubic-bezier(0.2,0.8,0.2,1)",
-                        }}
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
+        {/* De training van vandaag staat bovenaan: daar open je de app meestal voor. Zonder training
+            vandaag gaat de checklist voor nieuwe gebruikers voor. De planning volgt direct daarna. */}
+        {todays.length > 0 ? (
+          <>
+            {todayBlock}
+            <PlanStrip workouts={soon} title="Binnenkort" today={today} planHref={stripPlanHref} />
+            {onboarding}
+          </>
+        ) : (
+          <>
+            {onboarding}
+            {todayBlock}
+            <PlanStrip workouts={soon} title="Daarna" today={today} planHref={stripPlanHref} />
+          </>
+        )}
+
+        <WeekRecap userId={userId} history={history} goal={goal} today={today} friends={friends?.friends} />
+
+        <RankGoalCard
+          overall={overall}
+          rankFailed={failedToLoad(historyS)}
+          profileDone={profileDone}
+          days={trainedDays}
+          planned={plannedDays}
+          goal={goal}
+          today={today}
+          goalFailed={failedToLoad(historyS)}
+          onEditGoal={() => setGoalOpen(true)}
+        />
+
+        <WeekRecords history={history} today={today} />
+
+        <HomeFriends userId={userId} friends={friends} failed={failedToLoad(friendsS)} today={today} />
+
+        <NutritionCard week={foodS.data} failed={failedToLoad(foodS)} today={today} profile={profile as NutritionProfile | null} />
+
+        <HomeGroups
+          groups={groups}
+          failed={failedToLoad(groupsS)}
+          onAdd={() => setChooseOpen(true)}
+          onNew={() => setNewOpen(true)}
+          onJoin={() => setJoinOpen(true)}
+          onRetry={groupsS.retry}
+        />
+
+        {/* De enige ingang naar de oefeningenbibliotheek: klein en rustig onderaan. */}
+        <Link
+          href="/exercises"
+          className="mx-auto flex min-h-11 w-fit items-center gap-2 rounded-full px-3 text-xs font-semibold text-muted transition-colors hover:text-ink"
+        >
+          <BookIcon size={14} /> Oefeningenbibliotheek
+          <ChevronRightIcon size={14} />
         </Link>
-
-        <section className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">Vrienden</h2>
-            <Link href="/friends" className="text-xs font-semibold text-muted hover:text-ink">
-              Alles
-            </Link>
-          </div>
-          {incoming.length > 0 && (
-            <Link href="/friends" className="card flex items-center gap-3 border-accent/40 bg-accent/5 p-3">
-              <Avatar id={incoming[0].id} name={incoming[0].display_name} size={32} />
-              <p className="min-w-0 flex-1 text-sm">
-                <span className="font-semibold">{incoming[0].display_name}</span>
-                {incoming.length > 1
-                  ? ` en ${incoming.length - 1} ${incoming.length === 2 ? "ander willen" : "anderen willen"}`
-                  : " wil"}{" "}
-                je vriend worden
-              </p>
-              <ChevronRightIcon className="text-muted" />
-            </Link>
-          )}
-          {!friends ? (
-            <div className="skeleton h-[104px]" />
-          ) : (
-            <div className="-mx-4 flex gap-1 overflow-x-auto px-4 pb-1 [scrollbar-width:none]">
-              {friends.friends.map((f, i) => (
-                <FriendChip key={f.id} friend={f} index={i} />
-              ))}
-              <Link href="/friends" className="flex w-[76px] shrink-0 flex-col items-center gap-1.5 text-center">
-                <span className="flex h-14 w-14 items-center justify-center rounded-full border border-dashed border-line text-muted transition hover:border-muted hover:text-ink">
-                  <UserPlusIcon size={22} />
-                </span>
-                <span className="text-xs font-semibold text-muted">Toevoegen</span>
-              </Link>
-              {friends.friends.length === 0 && (
-                <p className="self-center pl-2 text-xs text-muted">Voeg vrienden toe en zie hoe zij trainen.</p>
-              )}
-            </div>
-          )}
-        </section>
-
-        {later.length > 0 && (
-          <section className="space-y-3">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">Binnenkort</h2>
-            {later.map((w, i) => (
-              <WorkoutCard key={w.id} w={w} index={i} />
-            ))}
-          </section>
-        )}
-
-        <section className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">Mijn groepen</h2>
-            <div className="flex gap-2">
-              <button className="btn-ghost px-3 py-1.5 text-xs" onClick={() => setJoinOpen(true)}>
-                Code invoeren
-              </button>
-              <button className="btn-primary px-3 py-1.5 text-xs" onClick={() => setNewOpen(true)}>
-                <PlusIcon size={14} /> Nieuwe groep
-              </button>
-            </div>
-          </div>
-          {groups === null ? (
-            <div className="space-y-2">
-              <div className="skeleton h-[72px]" />
-              <div className="skeleton h-[72px]" />
-            </div>
-          ) : groups.length === 0 ? (
-            <div className="card space-y-2 text-sm text-muted">
-              <p>Je zit nog niet in een groep.</p>
-              <p>Maak een groep aan en deel de uitnodigingslink met je vrienden, of voer een code in die je hebt gekregen.</p>
-            </div>
-          ) : (
-            groups.map((g, i) => (
-              <Link
-                key={g.id}
-                href={`/groups/${g.id}`}
-                className="card animate-fade-up flex items-center gap-3 hover:border-muted"
-                style={{ "--i": i } as React.CSSProperties}
-              >
-                <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-surface-2 text-lg font-bold text-accent">
-                  {g.name.slice(0, 1).toUpperCase()}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-semibold">{g.name}</p>
-                  <p className="text-xs text-muted">
-                    {g.memberCount} {g.memberCount === 1 ? "lid" : "leden"} · {g.role === "trainer" ? "Trainer" : "Lid"}
-                  </p>
-                </div>
-                <ChevronRightIcon className="text-muted" />
-              </Link>
-            ))
-          )}
-        </section>
       </div>
 
-      <NewGroupSheet open={newOpen} onClose={() => setNewOpen(false)} onCreated={(id) => router.push(`/groups/${id}`)} />
-      <JoinSheet open={joinOpen} onClose={() => setJoinOpen(false)} />
-    </AppShell>
-  );
-}
-
-/** Grote kaart voor de training van vandaag. */
-function TodayCard({ w, index }: { w: UpcomingWorkout; index: number }) {
-  const count = w.workout_exercises[0]?.count ?? 0;
-  return (
-    <Link
-      href={`/workouts/${w.id}`}
-      className="animate-scale-in relative block overflow-hidden rounded-2xl border border-accent/40 bg-gradient-to-br from-accent/20 via-accent/5 to-transparent p-5 transition active:scale-[0.99]"
-      style={{ "--i": index } as React.CSSProperties}
-    >
-      <div className="pointer-events-none absolute -right-10 -top-10 h-40 w-40 rounded-full bg-accent/25 blur-3xl" />
-      <div className="relative space-y-4">
-        <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-accent">
-          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
-          Vandaag{w.groups?.name ? ` · ${w.groups.name}` : ""}
-        </div>
-        <div>
-          <p className="text-2xl font-extrabold leading-tight">{w.title}</p>
-          <p className="mt-1 text-sm text-muted">{count} oefeningen</p>
-        </div>
-        <span className="btn-primary w-full">Start training</span>
-      </div>
-    </Link>
-  );
-}
-
-function WorkoutCard({ w, index = 0 }: { w: UpcomingWorkout; index?: number }) {
-  const count = w.workout_exercises[0]?.count ?? 0;
-  return (
-    <Link
-      href={`/workouts/${w.id}`}
-      className="card animate-fade-up flex items-center gap-3 hover:border-muted"
-      style={{ "--i": index } as React.CSSProperties}
-    >
-      <div className="min-w-0 flex-1">
-        <p className="truncate font-semibold">{w.title}</p>
-        <p className="text-xs text-muted">
-          {relativeDay(w.date)} · {w.groups?.name} · {count} oefeningen
-        </p>
-      </div>
-      <ChevronRightIcon className="text-muted" />
-    </Link>
-  );
-}
-
-function NewGroupSheet({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: (id: string) => void }) {
-  const [name, setName] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function create(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setError(null);
-    const { data, error } = await supabase.from("groups").insert({ name: name.trim() }).select("id").single();
-    setBusy(false);
-    if (error) return setError(errorMessage(error));
-    onCreated(data.id);
-  }
-
-  return (
-    <Sheet open={open} onClose={onClose} title="Nieuwe groep">
-      <form onSubmit={create} className="space-y-4">
-        <div>
-          <label className="label" htmlFor="gname">Naam</label>
-          <input id="gname" className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Bijv. Gym bros" required autoFocus />
-        </div>
-        <p className="text-sm text-muted">Jij wordt de trainer van deze groep. Daarna kun je vrienden uitnodigen.</p>
-        {error && <p className="text-sm text-danger">{error}</p>}
-        <button className="btn-primary w-full" disabled={busy || !name.trim()}>
-          {busy ? "Aanmaken…" : "Groep aanmaken"}
-        </button>
-      </form>
-    </Sheet>
-  );
-}
-
-function JoinSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [code, setCode] = useState("");
-  const router = useRouter();
-  return (
-    <Sheet open={open} onClose={onClose} title="Lid worden met code">
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          // Accepteert ook een volledige uitnodigingslink.
-          const c = code.trim().split("/").pop();
-          if (c) router.push(`/join/${c}`);
+      <GroupChoiceSheet
+        open={chooseOpen}
+        onClose={() => setChooseOpen(false)}
+        onNew={() => {
+          setChooseOpen(false);
+          setNewOpen(true);
         }}
-        className="space-y-4"
-      >
-        <input className="input" value={code} onChange={(e) => setCode(e.target.value)} placeholder="Code of uitnodigingslink" autoFocus />
-        <button className="btn-primary w-full" disabled={!code.trim()}>
-          Verder
-        </button>
-      </form>
-    </Sheet>
+        onJoin={() => {
+          setChooseOpen(false);
+          setJoinOpen(true);
+        }}
+      />
+      <NewGroupSheet open={newOpen} userId={userId} onClose={() => setNewOpen(false)} onCreated={(id) => router.push(`/groups/${id}`)} />
+      <JoinSheet open={joinOpen} onClose={() => setJoinOpen(false)} />
+      {goalOpen && (
+        <WeekGoalSheet
+          userId={userId}
+          goal={goal}
+          days={trainedDays}
+          today={today}
+          onClose={() => setGoalOpen(false)}
+          onSaved={refreshProfile}
+        />
+      )}
+    </AppShell>
   );
 }

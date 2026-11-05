@@ -193,3 +193,20 @@ export function focusLabel(focus: MuscleRegion | null): string | null {
   };
   return `Dit is een ${day[focus]}, dus we kijken alleen naar ${REGION_LABEL[focus].toLowerCase()}.`;
 }
+
+/**
+ * Vervangers voor een oefening: dezelfde hoofdspier(en), meest vergelijkbare eerst
+ * (eerst dezelfde belangrijkste hoofdspier, dan de grootste overlap in alle spieren).
+ */
+export function alternativesFor(ex: Exercise): Exercise[] {
+  const mine = new Set<MuscleId>([...ex.primary, ...ex.secondary]);
+  return EXERCISES.filter((e) => e.slug !== ex.slug && e.primary.some((m) => ex.primary.includes(m)))
+    .map((e, i) => {
+      const theirs = [...e.primary, ...e.secondary];
+      const shared = theirs.filter((m) => mine.has(m)).length;
+      const overlap = shared / (mine.size + theirs.length - shared || 1);
+      return { e, i, same: e.primary[0] === ex.primary[0] ? 0 : 1, overlap };
+    })
+    .sort((a, b) => a.same - b.same || b.overlap - a.overlap || a.i - b.i)
+    .map((x) => x.e);
+}

@@ -105,7 +105,9 @@ export async function fetchTrainedDays(userId: string): Promise<Set<string>> {
       .gt("reps", 0)
       .order("id")
       .range(from, from + PAGE - 1);
-    if (error || !data) break;
+    // Fout: gooien in plaats van een half resultaat teruggeven (dat zou een reeks ten onrechte breken).
+    if (error) throw error;
+    if (!data) break;
     for (const r of data as unknown as { workout_exercises: { workouts: { date: string } } }[]) {
       days.add(r.workout_exercises.workouts.date);
     }

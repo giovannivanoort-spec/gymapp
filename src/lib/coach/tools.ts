@@ -7,20 +7,28 @@ import { EQUIPMENT_LABEL } from "@/lib/exercise-types";
 import { EXERCISES, EXERCISE_BY_SLUG } from "@/lib/exercises";
 import { GROUP_BY_ID, MUSCLE_BY_ID, MUSCLE_GROUPS, MUSCLES, type MuscleGroupId, type MuscleId } from "@/lib/muscles";
 import { aggregateRanks, rankExercise } from "@/lib/ranks";
-import { computeTargets } from "@/lib/nutrition/targets";
+import { computeTargets, type NutritionProfile } from "@/lib/nutrition/targets";
 import { ageFrom } from "@/lib/dates";
+import { PUBLIC_PROFILE_COLUMNS, type Profile } from "@/lib/types";
+import {
+  dbMessage,
+  fetchMyProfile,
+  planGroupWorkout,
+  todayAmsterdam,
+  toolLabel as sharedToolLabel,
+  type WorkoutProposal,
+} from "@/lib/coach/shared";
 
 /**
  * Tools van de AI-coach. Ze gebruiken de Supabase-client van de ingelogde gebruiker,
  * dus Row Level Security bepaalt wat de coach mag lezen en schrijven.
+ * De Nederlandse labels voor de chat staan in shared.ts (TOOL_LABELS), zodat de chat ze ook kent.
  */
 
 export type ToolContext = { sb: SupabaseClient; userId: string };
 
 type CoachTool<S extends z.ZodType> = {
   name: string;
-  /** Korte Nederlandse status voor in de chat, bijv. "Trainingen bekijken". */
-  label: string;
   description: string;
   schema: S;
   run: (input: z.infer<S>, ctx: ToolContext) => Promise<unknown>;
@@ -41,6 +49,20 @@ const plannedExercise = z.object({
   notes: z.string().max(300).optional().describe("Korte uitvoeringstip voor deze oefening"),
 });
 
+/** Oefening in een groepsvoorstel: met optioneel een startgewicht per groepslid. */
+const proposedExercise = plannedExercise.extend({
+  targets: z
+    .array(
+      z.object({
+        name: z.string().min(1).max(40).describe("Voornaam van het groepslid zoals in get_group_lifts"),
+        target: z.string().min(1).max(30).describe('Startgewicht of doel voor de eerste werkset, bijv. "62,5 kg" of "+5 kg" of "lichaamsgewicht"'),
+      }),
+    )
+    .max(8)
+    .optional()
+    .describe("Startgewicht per groepslid op basis van get_group_lifts. Laat leden zonder eerdere sets weg."),
+});
+
 /** Compacte weergave van een oefening voor in tool-resultaten. */
 function brief(slug: string) {
   const e = EXERCISE_BY_SLUG[slug];
@@ -58,6 +80,30 @@ function unknownSlugs(slugs: string[]) {
   return slugs.filter((s) => !EXERCISE_BY_SLUG[s]);
 }
 
+/**
+ * Haalt alle rijen van een query op in pagina's van 1000 (PostgREST geeft er nooit meer tegelijk),
+ * zodat er geen willekeurige subset terugkomt. `maxPages` begrenst het geheel.
+ */
+async function fetchAll<T>(
+  page: (from: number, to: number) => PromiseLike<{ data: unknown; error: { message: string; code?: string } | null }>,
+  maxPages = 10,
+): Promise<{ rows: T[]; error: string | null; truncated: boolean }> {
+  const rows: T[] = [];
+  for (let i = 0; i < maxPages; i++) {
+    const { data, error } = await page(i * 1000, i * 1000 + 999);
+    if (error) return { rows, error: dbMessage(error), truncated: false };
+    const batch = (data ?? []) as T[];
+    rows.push(...batch);
+    if (batch.length < 1000) return { rows, error: null, truncated: false };
+  }
+  return { rows, error: null, truncated: true };
+}
+
+/** Datum (YYYY-MM-DD) van `days` dagen geleden in Nederlandse tijd. */
+function daysAgo(days: number) {
+  return new Date(Date.now() - days * 86400000).toLocaleDateString("sv-SE", { timeZone: "Europe/Amsterdam" });
+}
+
 function fmtSets(logs: { set_number: number; weight: number | null; reps: number | null }[]) {
   return [...logs]
     .sort((a, b) => a.set_number - b.set_number)
@@ -68,10 +114,9 @@ function fmtSets(logs: { set_number: number; weight: number | null; reps: number
 export const TOOLS = [
   tool({
     name: "search_exercises",
-    label: "Oefeningen zoeken",
     description:
-      "Zoek in de oefeningenbibliotheek van de app (219 oefeningen). Filter op tekst, spiergroep en/of losse spier. " +
-      "Gebruik altijd slugs uit deze bibliotheek als je een schema voorstelt of opslaat.",
+      `Zoek in de oefeningenbibliotheek van de app (${EXERCISES.length} oefeningen). Filter op tekst, spiergroep ` +
+      "en/of losse spier. Gebruik altijd slugs uit deze bibliotheek als je een schema voorstelt of opslaat.",
     schema: z.object({
       query: z.string().optional().describe("Zoektekst in de naam, bijv. 'curl'"),
       group: z.enum(groupIds).optional().describe("Spiergroep"),
@@ -93,7 +138,6 @@ export const TOOLS = [
 
   tool({
     name: "get_exercise",
-    label: "Oefening bekijken",
     description: "Volledige info over één oefening: spieren (met groep), uitvoering in stappen en tips.",
     schema: z.object({ slug: z.string() }),
     run: async ({ slug }) => {
@@ -112,7 +156,6 @@ export const TOOLS = [
 
   tool({
     name: "analyze_plan",
-    label: "Spieren analyseren",
     description:
       "Analyseer een (voorgestelde) training met de spieranalyse van de app: effectieve sets per spiergroep en per " +
       "losse spier, verdeling duwen/trekken/benen/core en tips wat ontbreekt. Gebruik dit voordat je een schema " +
@@ -145,7 +188,6 @@ export const TOOLS = [
 
   tool({
     name: "list_my_groups",
-    label: "Groepen bekijken",
     description: "De groepen van de gebruiker met hun rol (trainer/lid) en alle leden (id + naam).",
     schema: z.object({}),
     run: async (_input, { sb, userId }) => {
@@ -153,8 +195,8 @@ export const TOOLS = [
         .from("group_members")
         .select("role, groups(id, name, group_members(user_id, role, profiles(display_name)))")
         .eq("user_id", userId);
-      if (error) return { error: error.message };
-      return (data ?? []).map((row) => {
+      if (error) return { error: dbMessage(error) };
+      return (data ?? []).filter((row) => row.groups).map((row) => {
         const g = row.groups as unknown as {
           id: string;
           name: string;
@@ -176,7 +218,6 @@ export const TOOLS = [
 
   tool({
     name: "list_workouts",
-    label: "Trainingen bekijken",
     description:
       "Geplande en gedane groepstrainingen (alle groepen van de gebruiker, of één groep), met de oefeningen en doelen.",
     schema: z.object({
@@ -195,7 +236,7 @@ export const TOOLS = [
       if (from) q = q.gte("date", from);
       if (to) q = q.lte("date", to);
       const { data, error } = await q;
-      if (error) return { error: error.message };
+      if (error) return { error: dbMessage(error) };
       return (data ?? []).map((w) => ({
         workout_id: w.id,
         date: w.date,
@@ -211,7 +252,6 @@ export const TOOLS = [
 
   tool({
     name: "get_workout",
-    label: "Training nakijken",
     description:
       "Alle details van één training: oefeningen met doelen, de gelogde sets (kg × reps) van ieder groepslid, en de opmerkingen.",
     schema: z.object({ workout_id: z.string().uuid() }),
@@ -263,7 +303,6 @@ export const TOOLS = [
 
   tool({
     name: "get_training_log",
-    label: "Trainingslog bekijken",
     description:
       "Alles wat iemand (standaard de gebruiker zelf, of een groepslid via user_id) de afgelopen dagen heeft gelogd, " +
       "per training en oefening. Gebruik dit om progressie, frequentie en volume te beoordelen.",
@@ -272,14 +311,17 @@ export const TOOLS = [
       days: z.number().int().min(1).max(365).optional().describe("Aantal dagen terug, standaard 30"),
     }),
     run: async ({ user_id, days = 30 }, { sb, userId }) => {
-      const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
-      const { data, error } = await sb
-        .from("set_logs")
-        .select("set_number, weight, reps, workout_exercises!inner(exercise_slug, workouts!inner(id, date, title))")
-        .eq("user_id", user_id ?? userId)
-        .gte("workout_exercises.workouts.date", since)
-        .limit(2000);
-      if (error) return { error: error.message };
+      const since = daysAgo(days);
+      const { rows: data, error, truncated } = await fetchAll<unknown>((from, to) =>
+        sb
+          .from("set_logs")
+          .select("set_number, weight, reps, workout_exercises!inner(exercise_slug, workouts!inner(id, date, title))")
+          .eq("user_id", user_id ?? userId)
+          .gte("workout_exercises.workouts.date", since)
+          .order("id")
+          .range(from, to),
+      );
+      if (error) return { error };
       type Row = {
         set_number: number;
         weight: number | null;
@@ -296,6 +338,7 @@ export const TOOLS = [
       }
       return {
         days,
+        ...(truncated && { note: "Erg veel data; niet alle sets zijn meegenomen. Vraag een kortere periode op." }),
         sessions: [...sessions.values()]
           .sort((a, b) => b.date.localeCompare(a.date))
           .map((s) => ({
@@ -311,7 +354,6 @@ export const TOOLS = [
 
   tool({
     name: "get_exercise_history",
-    label: "Progressie bekijken",
     description: "De laatste sessies van één oefening voor de gebruiker (of een groepslid): datum en sets (kg × reps).",
     schema: z.object({
       slug: z.string(),
@@ -320,13 +362,18 @@ export const TOOLS = [
     }),
     run: async ({ slug, user_id, limit = 10 }, { sb, userId }) => {
       if (!EXERCISE_BY_SLUG[slug]) return { error: `Onbekende slug: ${slug}` };
-      const { data, error } = await sb
-        .from("set_logs")
-        .select("workout_exercise_id, set_number, weight, reps, workout_exercises!inner(exercise_slug, workouts!inner(date))")
-        .eq("user_id", user_id ?? userId)
-        .eq("workout_exercises.exercise_slug", slug)
-        .limit(500);
-      if (error) return { error: error.message };
+      // Alle sets van deze oefening ophalen (in pagina's) en daarna op datum sorteren, zodat
+      // "de laatste sessies" echt de laatste zijn en geen willekeurige greep uit de tabel.
+      const { rows: data, error } = await fetchAll<unknown>((from, to) =>
+        sb
+          .from("set_logs")
+          .select("workout_exercise_id, set_number, weight, reps, workout_exercises!inner(exercise_slug, workouts!inner(date))")
+          .eq("user_id", user_id ?? userId)
+          .eq("workout_exercises.exercise_slug", slug)
+          .order("id")
+          .range(from, to),
+      );
+      if (error) return { error };
       type Row = {
         workout_exercise_id: string;
         set_number: number;
@@ -350,7 +397,6 @@ export const TOOLS = [
 
   tool({
     name: "get_strength_ranks",
-    label: "Ranks bekijken",
     description:
       "Krachtranks (Brons, Zilver, Goud, Platina, Diamant, Elite, Olympiër) van de gebruiker of een groepslid: per oefening " +
       "(geschatte 1RM of reps, en wat nodig is voor de volgende rang), per spiergroep en totaal. Gebaseerd op " +
@@ -358,24 +404,30 @@ export const TOOLS = [
     schema: z.object({ user_id: z.string().uuid().optional() }),
     run: async ({ user_id }, { sb, userId }) => {
       const uid = user_id ?? userId;
-      const { data: profile } = await sb.from("profiles").select("*").eq("id", uid).single();
+      // Eigen profiel volledig; van een groepslid alleen de openbare kolommen (geen voedingsdoelen).
+      const profile =
+        uid === userId
+          ? await fetchMyProfile(sb, userId)
+          : ((await sb.from("profiles").select(PUBLIC_PROFILE_COLUMNS).eq("id", uid).maybeSingle()).data as Profile | null);
       if (!profile?.bodyweight_kg || !profile?.sex) {
         return { error: "Lichaamsgewicht en/of geslacht ontbreken in het profiel; zonder die gegevens zijn er geen ranks." };
       }
-      const logs = new Map<string, { weight: number | null; reps: number | null }[]>();
-      for (let from = 0; ; from += 1000) {
-        const { data, error } = await sb
+      // Stabiel pagineren (op id), anders kunnen sets bij meer dan 1000 rijen dubbel of niet meetellen.
+      type R = { weight: number | null; reps: number | null; workout_exercises: { exercise_slug: string } };
+      const { rows, error } = await fetchAll<R>((from, to) =>
+        sb
           .from("set_logs")
           .select("weight, reps, workout_exercises!inner(exercise_slug)")
           .eq("user_id", uid)
           .not("reps", "is", null)
-          .range(from, from + 999);
-        if (error) return { error: error.message };
-        for (const r of (data ?? []) as unknown as { weight: number | null; reps: number | null; workout_exercises: { exercise_slug: string } }[]) {
-          const slug = r.workout_exercises.exercise_slug;
-          logs.set(slug, [...(logs.get(slug) ?? []), { weight: r.weight != null ? Number(r.weight) : null, reps: r.reps }]);
-        }
-        if (!data || data.length < 1000) break;
+          .order("id")
+          .range(from, to),
+      );
+      if (error) return { error };
+      const logs = new Map<string, { weight: number | null; reps: number | null }[]>();
+      for (const r of rows) {
+        const slug = r.workout_exercises.exercise_slug;
+        logs.set(slug, [...(logs.get(slug) ?? []), { weight: r.weight != null ? Number(r.weight) : null, reps: r.reps }]);
       }
       const ranks = [...logs]
         .map(([slug, l]) => rankExercise(slug, l, Number(profile.bodyweight_kg), profile.sex, ageFrom(profile.birth_date)))
@@ -399,7 +451,6 @@ export const TOOLS = [
 
   tool({
     name: "get_nutrition",
-    label: "Voeding bekijken",
     description:
       "Voedingsdagboek van de gebruiker: per dag calorieën, eiwit, koolhydraten en vet (en per maaltijd wat er gegeten is), " +
       "plus de dagdoelen (berekend uit gewicht, lengte, leeftijd, geslacht, activiteit en doel, of handmatig ingesteld).",
@@ -409,12 +460,20 @@ export const TOOLS = [
     }),
     run: async ({ days = 7, details }, { sb, userId }) => {
       const since = new Date(Date.now() - (days - 1) * 86400000).toLocaleDateString("sv-SE", { timeZone: "Europe/Amsterdam" });
-      const [{ data: profile }, { data: logs, error }] = await Promise.all([
-        sb.from("profiles").select("*").eq("id", userId).single(),
-        sb.from("food_logs").select("date, meal, name, grams, kcal, protein, carbs, fat").gte("date", since).eq("planned", false).order("date").limit(2000),
+      const [profile, { data: logs, error }] = await Promise.all([
+        fetchMyProfile(sb, userId),
+        sb
+          .from("food_logs")
+          .select("date, meal, name, grams, kcal, protein, carbs, fat")
+          // RLS laat alleen je eigen dagboek zien; dit filter is een tweede slot op de deur.
+          .eq("user_id", userId)
+          .gte("date", since)
+          .eq("planned", false)
+          .order("date")
+          .limit(2000),
       ]);
-      if (error) return { error: error.message };
-      const targets = computeTargets(profile);
+      if (error) return { error: dbMessage(error) };
+      const targets = computeTargets(profile as NutritionProfile | null);
       type L = { date: string; meal: string; name: string; grams: number; kcal: number; protein: number; carbs: number; fat: number };
       const byDay = new Map<string, L[]>();
       for (const l of (logs ?? []) as L[]) byDay.set(l.date, [...(byDay.get(l.date) ?? []), l]);
@@ -450,20 +509,115 @@ export const TOOLS = [
   }),
 
   tool({
+    name: "get_group_check",
+    description:
+      "Groepscheck voor de trainer: per lid het aantal trainingen, gemiste groepstrainingen, de laatste training en " +
+      "effectieve sets per spiergroep per week over de afgelopen dagen, plus het groepsgemiddelde en de spiergroepen " +
+      "die het minst getraind zijn. Gebruik dit om te zien wie achterloopt en om de volgende groepstraining te plannen. " +
+      "Bevat bewust geen voeding (die is privé).",
+    schema: z.object({
+      group_id: z.string().uuid(),
+      days: z.number().int().min(7).max(60).optional().describe("Aantal dagen terug, standaard 14"),
+    }),
+    run: async ({ group_id, days = 14 }, { sb }) => {
+      const since = daysAgo(days);
+      const today = daysAgo(0);
+      const [group, members, planned] = await Promise.all([
+        sb.from("groups").select("name").eq("id", group_id).maybeSingle(),
+        sb.from("group_members").select("user_id, role, profiles(display_name)").eq("group_id", group_id),
+        sb.from("workouts").select("id, date, title").eq("group_id", group_id).gte("date", since).lte("date", today).order("date"),
+      ]);
+      const firstError = group.error ?? members.error ?? planned.error;
+      if (firstError) return { error: dbMessage(firstError) };
+      if (!group.data) return { error: "Groep niet gevonden of geen toegang." };
+      const people = (members.data ?? []).map((m) => ({
+        user_id: m.user_id as string,
+        role: m.role as string,
+        name: (m.profiles as unknown as { display_name: string } | null)?.display_name ?? "Onbekend",
+      }));
+      if (!people.length) return { group: group.data.name, members: [] };
+
+      type Row = { user_id: string; workout_exercises: { exercise_slug: string; workouts: { id: string; date: string; group_id: string } } };
+      const { rows, error, truncated } = await fetchAll<Row>(
+        (from, to) =>
+          sb
+            .from("set_logs")
+            .select("user_id, workout_exercises!inner(exercise_slug, workouts!inner(id, date, group_id))")
+            .in(
+              "user_id",
+              people.map((p) => p.user_id),
+            )
+            .gte("workout_exercises.workouts.date", since)
+            .lte("workout_exercises.workouts.date", today)
+            .order("id")
+            .range(from, to),
+        20,
+      );
+      if (error) return { error };
+
+      const weeks = days / 7;
+      const perWeek = (n: number) => Math.round((n / weeks) * 10) / 10;
+      const pastGroupSessions = (planned.data ?? []).filter((w) => w.date < today);
+      const groupTotals = new Map<MuscleGroupId, number>();
+
+      const report = people.map((p) => {
+        const mine = rows.filter((r) => r.user_id === p.user_id);
+        const workouts = new Map<string, string>();
+        const setsBySlug = new Map<string, number>();
+        for (const r of mine) {
+          const w = r.workout_exercises.workouts;
+          workouts.set(w.id, w.date);
+          const slug = r.workout_exercises.exercise_slug;
+          setsBySlug.set(slug, (setsBySlug.get(slug) ?? 0) + 1);
+        }
+        const a = analyzePlan([...setsBySlug].map(([slug, sets]) => ({ slug, sets, reps: "" })));
+        for (const g of a.groups) groupTotals.set(g.id, (groupTotals.get(g.id) ?? 0) + g.sets);
+        const byGroup = a.groups.map((g) => ({ group: GROUP_BY_ID[g.id].name, per_week: perWeek(g.sets) }));
+        const dates = [...workouts.values()].sort();
+        return {
+          name: p.name,
+          role: p.role === "trainer" ? "trainer" : "lid",
+          sessions: workouts.size,
+          sessions_per_week: perWeek(workouts.size),
+          last_trained: dates.at(-1) ?? null,
+          missed_group_sessions: pastGroupSessions
+            .filter((w) => !workouts.has(w.id))
+            .map((w) => `${w.date} ${w.title}`),
+          total_sets: mine.length,
+          sets_per_week_by_muscle_group: Object.fromEntries(byGroup.filter((g) => g.per_week > 0).map((g) => [g.group, g.per_week])),
+          least_trained_groups: [...byGroup].sort((x, y) => x.per_week - y.per_week).slice(0, 4).map((g) => g.group),
+        };
+      });
+
+      const avg = MUSCLE_GROUPS.map((g) => ({
+        group: g.name,
+        per_week: perWeek((groupTotals.get(g.id) ?? 0) / people.length),
+      }));
+      return {
+        group: group.data.name,
+        period: `${since} t/m ${today} (${days} dagen)`,
+        group_sessions_in_period: (planned.data ?? []).map((w) => `${w.date} ${w.title}`),
+        ...(truncated && { note: "Erg veel data; niet alle sets zijn meegenomen." }),
+        members: report,
+        group_average_sets_per_week: Object.fromEntries(avg.map((g) => [g.group, g.per_week])),
+        least_trained_groups_overall: [...avg].sort((x, y) => x.per_week - y.per_week).slice(0, 4).map((g) => g.group),
+      };
+    },
+  }),
+
+  tool({
     name: "list_templates",
-    label: "Schema's bekijken",
     description: "De opgeslagen trainingsschema's (templates) van de gebruiker.",
     schema: z.object({}),
     run: async (_input, { sb }) => {
       const { data, error } = await sb.from("templates").select("id, name, exercises").order("created_at", { ascending: false });
-      if (error) return { error: error.message };
+      if (error) return { error: dbMessage(error) };
       return data;
     },
   }),
 
   tool({
     name: "save_template",
-    label: "Schema opslaan",
     description:
       "Sla een trainingsschema op bij de schema's van de gebruiker. Alleen gebruiken als de gebruiker vraagt om een " +
       "schema te maken/opslaan. Gebruik eerst analyze_plan.",
@@ -471,21 +625,170 @@ export const TOOLS = [
       name: z.string().min(1).max(80),
       exercises: z.array(plannedExercise).min(1).max(30),
     }),
-    run: async ({ name, exercises }, { sb }) => {
+    run: async ({ name, exercises }, { sb, userId }) => {
       const bad = unknownSlugs(exercises.map((e) => e.slug));
       if (bad.length) return { error: `Onbekende slugs: ${bad.join(", ")}` };
+      // Idempotent: werd hetzelfde schema net al opgeslagen (bijv. een antwoord dat na een onderbreking
+      // wordt afgemaakt), dan dat schema teruggeven in plaats van een dubbele.
+      const shape = (list: unknown) =>
+        JSON.stringify(
+          (Array.isArray(list) ? list : []).map((e: { slug?: string; sets?: number; reps?: string; notes?: string }) => [
+            e.slug,
+            e.sets,
+            e.reps,
+            e.notes ?? "",
+          ]),
+        );
+      const { data: recent } = await sb
+        .from("templates")
+        .select("id, exercises")
+        .eq("owner_id", userId)
+        .eq("name", name)
+        .gte("created_at", new Date(Date.now() - 10 * 60 * 1000).toISOString())
+        .limit(5);
+      const same = (recent ?? []).find((t) => shape(t.exercises) === shape(exercises));
+      if (same) {
+        return {
+          ok: true,
+          template_id: same.id,
+          link: `/templates/${same.id}`,
+          name,
+          exercise_count: exercises.length,
+          note: "Dit schema stond al opgeslagen; er is niets dubbel aangemaakt.",
+        };
+      }
       const { data, error } = await sb.from("templates").insert({ name, exercises }).select("id").single();
-      if (error) return { error: error.message };
-      return { ok: true, template_id: data.id, link: `/templates/${data.id}` };
+      if (error) return { error: dbMessage(error) };
+      return { ok: true, template_id: data.id, link: `/templates/${data.id}`, name, exercise_count: exercises.length };
+    },
+  }),
+
+  tool({
+    name: "get_group_lifts",
+    description:
+      "Per groepslid de laatste sessies (datum en sets kg × reps) van een paar oefeningen, in één keer. Gebruik dit bij " +
+      "een groepsvoorstel om per lid een startgewicht (targets) te bepalen, zodat de trainer niets hoeft op te zoeken " +
+      "terwijl hij meerdere vrienden tegelijk traint.",
+    schema: z.object({
+      group_id: z.string().uuid(),
+      slugs: z.array(z.string()).min(1).max(12).describe("Slugs van de oefeningen in het voorstel"),
+      sessions: z.number().int().min(1).max(4).optional().describe("Aantal laatste sessies per oefening, standaard 2"),
+    }),
+    run: async ({ group_id, slugs, sessions = 2 }, { sb }) => {
+      const bad = unknownSlugs(slugs);
+      if (bad.length) return { error: `Onbekende slugs: ${bad.join(", ")}` };
+      const { data: members, error: mErr } = await sb
+        .from("group_members")
+        .select("user_id, profiles(display_name)")
+        .eq("group_id", group_id);
+      if (mErr) return { error: dbMessage(mErr) };
+      if (!members?.length) return { error: "Groep niet gevonden of geen toegang." };
+      type Row = {
+        user_id: string;
+        workout_exercise_id: string;
+        set_number: number;
+        weight: number | null;
+        reps: number | null;
+        workout_exercises: { exercise_slug: string; workouts: { date: string } };
+      };
+      const { rows, error, truncated } = await fetchAll<Row>((from, to) =>
+        sb
+          .from("set_logs")
+          .select("user_id, workout_exercise_id, set_number, weight, reps, workout_exercises!inner(exercise_slug, workouts!inner(date))")
+          .in(
+            "user_id",
+            members.map((m) => m.user_id as string),
+          )
+          .in("workout_exercises.exercise_slug", slugs)
+          .gte("workout_exercises.workouts.date", daysAgo(180))
+          .order("id")
+          .range(from, to),
+      );
+      if (error) return { error };
+      return {
+        ...(truncated && { note: "Erg veel data; niet alle sets zijn meegenomen." }),
+        members: members.map((m) => {
+          const mine = rows.filter((r) => r.user_id === m.user_id);
+          const lifts: Record<string, { date: string; sets: string }[]> = {};
+          for (const slug of slugs) {
+            const bySession = new Map<string, Row[]>();
+            for (const r of mine) {
+              if (r.workout_exercises.exercise_slug !== slug) continue;
+              bySession.set(r.workout_exercise_id, [...(bySession.get(r.workout_exercise_id) ?? []), r]);
+            }
+            const list = [...bySession.values()]
+              .map((rs) => ({ date: rs[0].workout_exercises.workouts.date, sets: fmtSets(rs) }))
+              .sort((a, b) => b.date.localeCompare(a.date))
+              .slice(0, sessions);
+            if (list.length) lifts[EXERCISE_BY_SLUG[slug].name] = list;
+          }
+          return {
+            name: (m.profiles as unknown as { display_name: string } | null)?.display_name ?? "Onbekend",
+            lifts,
+            ...(Object.keys(lifts).length === 0 && { note: "Nog geen sets van deze oefeningen in de afgelopen 180 dagen." }),
+          };
+        }),
+      };
+    },
+  }),
+
+  tool({
+    name: "propose_group_workout",
+    description:
+      "Stel een groepstraining voor zonder iets op te slaan. De app toont het voorstel als kaart in de chat, waarop de " +
+      "trainer de datum kan aanpassen en zelf op Klaarzetten drukt. Dit is de standaardmanier om een groepstraining te " +
+      "plannen. Alleen voor groepen waar de gebruiker trainer is. Gebruik eerst analyze_plan, en get_group_lifts om per " +
+      "oefening een startgewicht per lid (targets) mee te geven.",
+    schema: z.object({
+      group_id: z.string().uuid(),
+      date: isoDate.describe("Voorgestelde datum (vandaag of later)"),
+      title: z.string().min(1).max(80),
+      notes: z.string().max(1000).optional().describe("Korte notitie voor de groep, bijv. de focus van de training"),
+      exercises: z.array(proposedExercise).min(1).max(30),
+    }),
+    run: async ({ group_id, date, title, notes, exercises }, { sb, userId }) => {
+      const bad = unknownSlugs(exercises.map((e) => e.slug));
+      if (bad.length) return { error: `Onbekende slugs: ${bad.join(", ")}` };
+      if (date < todayAmsterdam()) return { error: `De datum ${date} ligt in het verleden. Kies vandaag of later.` };
+      const { data: m, error } = await sb
+        .from("group_members")
+        .select("role, groups(name)")
+        .eq("group_id", group_id)
+        .eq("user_id", userId)
+        .maybeSingle();
+      if (error) return { error: dbMessage(error, "Groep ophalen") };
+      if (!m) return { error: "Groep niet gevonden of de gebruiker is geen lid." };
+      if (m.role !== "trainer") return { error: "Alleen de trainer van deze groep kan trainingen klaarzetten." };
+      const proposal: WorkoutProposal = {
+        group_id,
+        group: (m.groups as unknown as { name: string } | null)?.name ?? "Groep",
+        date,
+        title,
+        ...(notes && { notes }),
+        exercises: exercises.map((e) => ({
+          slug: e.slug,
+          name: EXERCISE_BY_SLUG[e.slug].name,
+          sets: e.sets,
+          reps: e.reps,
+          ...(e.notes && { notes: e.notes }),
+          ...(e.targets?.length && { targets: e.targets }),
+        })),
+      };
+      return {
+        ok: true,
+        note: "Het voorstel staat als kaart in de chat. De trainer zet het zelf klaar met de knop; er is nog niets opgeslagen.",
+        proposal,
+      };
     },
   }),
 
   tool({
     name: "plan_group_workout",
-    label: "Training klaarzetten",
     description:
-      "Zet een training klaar voor een groep op een datum (zichtbaar voor alle leden). Werkt alleen als de gebruiker " +
-      "trainer van die groep is. Alleen gebruiken als de gebruiker daar expliciet om vraagt of je voorstel heeft bevestigd.",
+      "Zet een training direct klaar voor een groep (zichtbaar voor alle leden), zonder kaart ter bevestiging. Alleen " +
+      "gebruiken als de trainer in zijn bericht uitdrukkelijk vraagt om het direct klaar te zetten; gebruik anders " +
+      "propose_group_workout. Werkt alleen als de gebruiker trainer van die groep is. Weigert datums in het verleden en " +
+      "geeft een bestaande training terug als die er al staat (zelfde groep, datum en titel).",
     schema: z.object({
       group_id: z.string().uuid(),
       date: isoDate,
@@ -493,30 +796,14 @@ export const TOOLS = [
       notes: z.string().max(1000).optional(),
       exercises: z.array(plannedExercise).min(1).max(30),
     }),
-    run: async ({ group_id, date, title, notes, exercises }, { sb }) => {
-      const bad = unknownSlugs(exercises.map((e) => e.slug));
+    run: async (input, { sb }) => {
+      const bad = unknownSlugs(input.exercises.map((e) => e.slug));
       if (bad.length) return { error: `Onbekende slugs: ${bad.join(", ")}` };
-      const { data: w, error } = await sb
-        .from("workouts")
-        .insert({ group_id, date, title, notes: notes || null })
-        .select("id")
-        .single();
-      if (error) return { error: `Niet gelukt (ben je trainer van deze groep?): ${error.message}` };
-      const { error: exErr } = await sb.from("workout_exercises").insert(
-        exercises.map((e, position) => ({
-          workout_id: w.id,
-          exercise_slug: e.slug,
-          position,
-          target_sets: e.sets,
-          target_reps: e.reps,
-          notes: e.notes || null,
-        })),
-      );
-      if (exErr) {
-        await sb.from("workouts").delete().eq("id", w.id);
-        return { error: exErr.message };
+      const r = await planGroupWorkout(sb, input);
+      if ("ok" in r && r.existing) {
+        return { ...r, note: "Deze training stond al klaar; er is niets dubbel aangemaakt." };
       }
-      return { ok: true, workout_id: w.id, link: `/workouts/${w.id}` };
+      return r;
     },
   }),
 ];
@@ -535,14 +822,16 @@ export const TOOL_DEFINITIONS: Anthropic.Beta.BetaTool[] = TOOLS.map((t) => {
   };
 });
 
-export function toolLabel(name: string) {
-  return BY_NAME.get(name)?.label ?? name;
-}
+export const toolLabel = sharedToolLabel;
 
 /** Voert een tool uit; valideert eerst de invoer (bij eager streaming valideert de API niet zelf). */
-export async function runTool(name: string, input: unknown, ctx: ToolContext): Promise<{ content: string; isError: boolean }> {
+export async function runTool(
+  name: string,
+  input: unknown,
+  ctx: ToolContext,
+): Promise<{ content: string; isError: boolean; data?: unknown }> {
   const t = BY_NAME.get(name);
-  if (!t) return { content: `Onbekende tool: ${name}`, isError: true };
+  if (!t) return { content: JSON.stringify({ error: `Onbekende tool: ${name}` }), isError: true };
   const parsed = t.schema.safeParse(input);
   if (!parsed.success) {
     return { content: JSON.stringify({ INVALID_INPUT: z.prettifyError(parsed.error) }), isError: true };
@@ -551,8 +840,9 @@ export async function runTool(name: string, input: unknown, ctx: ToolContext): P
     // De generieke koppeling tussen schema en run gaat verloren in de array; de invoer is hierboven gevalideerd.
     const result = await (t.run as (i: unknown, c: ToolContext) => Promise<unknown>)(parsed.data, ctx);
     const isError = !!result && typeof result === "object" && "error" in result;
-    return { content: JSON.stringify(result), isError };
+    return { content: JSON.stringify(result), isError, data: result };
   } catch (err) {
-    return { content: `Fout in ${name}: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+    console.error(`[coach] tool ${name} faalde`, err);
+    return { content: JSON.stringify({ error: `${toolLabel(name)} mislukte door een onverwachte fout.` }), isError: true };
   }
 }

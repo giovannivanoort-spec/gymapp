@@ -8,13 +8,17 @@ import {
   WEEKLY_SETS_MAX,
   WEEKLY_SETS_MIN,
   formatWeekRange,
+  parseISODate,
   setsInRange,
   setsToPlan,
   volumeStatus,
+  weekKey,
   weekRange,
   type VolumeStatus,
 } from "@/lib/week";
-import { ChevronRightIcon } from "./Icons";
+import { ChevronLeftIcon, ChevronRightIcon } from "./Icons";
+
+const TREND_WEEKS = 6;
 
 const STATUS: Record<VolumeStatus, { label: string; text: string; bar: string }> = {
   low: { label: "te weinig", text: "text-muted", bar: "bg-muted/70" },
@@ -27,8 +31,22 @@ const STATUS: Record<VolumeStatus, { label: string; text: string; bar: string }>
  * Een spier die meehelpt telt als een halve set (zie analyzePlan).
  */
 export function WeeklyVolume({ history }: { history: HistorySet[] }) {
-  const [offset, setOffset] = useState<0 | -1>(0);
+  const [offset, setOffset] = useState(0);
   const [open, setOpen] = useState<MuscleGroupId | null>(null);
+
+  // Terugbladeren kan tot de week van je eerste gelogde set (minstens de trendperiode).
+  const minOffset = useMemo(() => {
+    let first: string | null = null;
+    for (const s of history) if ((s.reps ?? 0) > 0 && (!first || s.date < first)) first = s.date;
+    if (!first) return -(TREND_WEEKS - 1);
+    const weeks = Math.round((parseISODate(weekKey(new Date())).getTime() - parseISODate(weekKey(first)).getTime()) / (7 * 86_400_000));
+    return -Math.max(TREND_WEEKS - 1, weeks);
+  }, [history]);
+
+  const go = (next: number) => {
+    setOffset(Math.min(0, Math.max(minOffset, next)));
+    setOpen(null);
+  };
 
   const range = useMemo(() => weekRange(offset), [offset]);
   const { rows, totalSets, scale } = useMemo(() => {
@@ -42,36 +60,65 @@ export function WeeklyVolume({ history }: { history: HistorySet[] }) {
     return { rows, totalSets: sets.length, scale };
   }, [history, range]);
 
+  // Effectieve sets per spiergroep in de 6 weken tot en met de gekozen week (oud → nieuw).
+  const trend = useMemo(() => {
+    const out = new Map<MuscleGroupId, { from: string; sets: number }[]>();
+    for (let o = offset - (TREND_WEEKS - 1); o <= offset; o++) {
+      const r = weekRange(o);
+      const { groups } = analyzePlan(setsToPlan(setsInRange(history, r.from, r.to)));
+      for (const g of groups) {
+        let list = out.get(g.id);
+        if (!list) out.set(g.id, (list = []));
+        list.push({ from: r.from, sets: g.sets });
+      }
+    }
+    return out;
+  }, [history, offset]);
+
   const pct = (v: number) => `${Math.min(100, (v / scale) * 100)}%`;
   const inBand = rows.filter((g) => volumeStatus(g.sets) === "good").length;
 
   return (
-    <section className="space-y-3">
-      <div className="flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">Volume per spiergroep</h2>
-        <div className="flex rounded-xl border border-line bg-surface-2 p-0.5 text-xs font-semibold" role="group" aria-label="Kies week">
-          {([0, -1] as const).map((o) => (
-            <button
-              key={o}
-              onClick={() => {
-                setOffset(o);
-                setOpen(null);
-              }}
-              aria-pressed={offset === o}
-              className={`rounded-[10px] px-2.5 py-1.5 transition ${
-                offset === o ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink"
-              }`}
-            >
-              {o === 0 ? "Deze week" : "Vorige week"}
-            </button>
-          ))}
+    <section className="space-y-3" aria-label="Volume per spiergroep">
+      <div className="flex items-center gap-2" role="group" aria-label="Kies week">
+        <button
+          type="button"
+          onClick={() => go(offset - 1)}
+          disabled={offset <= minOffset}
+          className="btn-ghost h-10 w-10 shrink-0 p-0 disabled:opacity-40"
+          aria-label="Vorige week"
+        >
+          <ChevronLeftIcon size={18} />
+        </button>
+        <div className="min-w-0 flex-1 text-center" aria-live="polite">
+          <p className="truncate font-bold tabular-nums">{formatWeekRange(range)}</p>
+          <p className="text-xs text-muted">{weekLabel(offset)}</p>
         </div>
+        {offset < 0 ? (
+          <button
+            type="button"
+            onClick={() => go(offset + 1)}
+            className="btn-ghost h-10 w-10 shrink-0 p-0"
+            aria-label="Volgende week"
+          >
+            <ChevronRightIcon size={18} />
+          </button>
+        ) : (
+          <span className="h-10 w-10 shrink-0" aria-hidden />
+        )}
       </div>
+      {offset < -1 && (
+        <div className="-mt-1 flex justify-center">
+          <button type="button" onClick={() => go(0)} className="animate-fade-in text-xs font-semibold text-accent">
+            Naar deze week
+          </button>
+        </div>
+      )}
 
-      <div className="card space-y-4">
+      <div key={range.from} className="card animate-fade-in space-y-4">
         <div className="flex items-baseline justify-between gap-3">
           <div>
-            <p className="font-bold">{formatWeekRange(range)}</p>
+            <p className="text-sm font-semibold">Effectieve sets per spiergroep</p>
             <p className="text-xs text-muted">
               {totalSets === 0
                 ? offset === 0
@@ -103,19 +150,21 @@ export function WeeklyVolume({ history }: { history: HistorySet[] }) {
               const status = volumeStatus(g.sets);
               const s = STATUS[status];
               const empty = g.sets === 0;
+              const weeks = trend.get(g.id) ?? [];
+              const expandable = !empty || weeks.some((w) => w.sets > 0);
               const isOpen = open === g.id;
               return (
                 <li key={g.id} className="animate-fade-up" style={{ "--i": i } as React.CSSProperties}>
                   <button
                     onClick={() => setOpen(isOpen ? null : g.id)}
-                    disabled={empty}
-                    aria-expanded={empty ? undefined : isOpen}
+                    disabled={!expandable}
+                    aria-expanded={expandable ? isOpen : undefined}
                     className="block w-full py-2.5 text-left disabled:cursor-default"
                   >
                     <span className="flex items-center gap-2 text-sm">
                       <ChevronRightIcon
                         size={14}
-                        className={`shrink-0 text-muted transition-transform duration-200 ${isOpen ? "rotate-90" : ""} ${empty ? "opacity-0" : ""}`}
+                        className={`shrink-0 text-muted transition-transform duration-200 ${isOpen ? "rotate-90" : ""} ${expandable ? "" : "opacity-0"}`}
                       />
                       <span className={`min-w-0 flex-1 truncate font-medium ${empty ? "text-muted" : ""}`}>
                         {GROUP_BY_ID[g.id].name}
@@ -130,17 +179,20 @@ export function WeeklyVolume({ history }: { history: HistorySet[] }) {
                     </span>
                   </button>
                   {isOpen && (
-                    <ul className="animate-fade-in mb-3 ml-6 space-y-1.5 border-l border-line pl-3">
-                      {g.muscles.map((m) => (
-                        <li key={m.id} className="grid grid-cols-[minmax(0,8rem)_1fr_2rem] items-center gap-2 text-xs">
-                          <span className={`truncate ${m.sets > 0 ? "" : "text-muted"}`} title={MUSCLE_BY_ID[m.id].name}>
-                            {MUSCLE_BY_ID[m.id].short}
-                          </span>
-                          <Track value={pct(m.sets)} bar={m.sets > 0 ? STATUS[volumeStatus(m.sets)].bar : ""} thin />
-                          <span className="text-right tabular-nums text-muted">{fmt(m.sets)}</span>
-                        </li>
-                      ))}
-                    </ul>
+                    <div className="animate-fade-in mb-3 ml-6 space-y-3 border-l border-line pl-3">
+                      <WeekTrend weeks={weeks} selected={range.from} />
+                      <ul className="space-y-1.5">
+                        {g.muscles.map((m) => (
+                          <li key={m.id} className="grid grid-cols-[minmax(0,8rem)_1fr_2rem] items-center gap-2 text-xs">
+                            <span className={`truncate ${m.sets > 0 ? "" : "text-muted"}`} title={MUSCLE_BY_ID[m.id].name}>
+                              {MUSCLE_BY_ID[m.id].short}
+                            </span>
+                            <Track value={pct(m.sets)} bar={m.sets > 0 ? STATUS[volumeStatus(m.sets)].bar : ""} thin />
+                            <span className="text-right tabular-nums text-muted">{fmt(m.sets)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
                   )}
                 </li>
               );
@@ -152,11 +204,58 @@ export function WeeklyVolume({ history }: { history: HistorySet[] }) {
           <span className="mt-0.5 h-3 w-5 shrink-0 rounded-[3px] border border-accent/30 bg-accent/10" aria-hidden />
           <p>
             {WEEKLY_SETS_MIN}–{WEEKLY_SETS_MAX} sets per spiergroep per week is het bereik waarin de meeste spiergroei zit. Een spier
-            die meehelpt telt als een halve set. Tik op een groep voor de losse spieren.
+            die meehelpt telt als een halve set. Tik op een groep voor de losse spieren en het verloop over {TREND_WEEKS} weken.
           </p>
         </div>
       </div>
     </section>
+  );
+}
+
+function weekLabel(offset: number): string {
+  if (offset === 0) return "Deze week";
+  if (offset === -1) return "Vorige week";
+  return `${-offset} weken geleden`;
+}
+
+/** Kleine staafjes: effectieve sets per week voor één spiergroep, met het 10–20-bereik als band. */
+function WeekTrend({ weeks, selected }: { weeks: { from: string; sets: number }[]; selected: string }) {
+  const max = Math.max(WEEKLY_SETS_MAX + 5, ...weeks.map((w) => w.sets));
+  const h = (v: number) => `${(v / max) * 100}%`;
+  return (
+    <div>
+      <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted">Verloop over {weeks.length} weken</p>
+      <div className="relative h-12">
+        <span
+          className="absolute inset-x-0 border-y border-accent/30 bg-accent/10"
+          style={{ bottom: h(WEEKLY_SETS_MIN), height: `calc(${h(WEEKLY_SETS_MAX)} - ${h(WEEKLY_SETS_MIN)})` }}
+          aria-hidden
+        />
+        <ol className="relative flex h-full items-end gap-1.5" aria-label="Effectieve sets per week">
+          {weeks.map((w) => (
+            <li
+              key={w.from}
+              className="flex h-full flex-1 items-end justify-center"
+              aria-label={`Week van ${parseISODate(w.from).toLocaleDateString("nl-NL", { day: "numeric", month: "short" })}: ${fmt(w.sets)} sets`}
+            >
+              <span
+                className={`block w-full max-w-6 rounded-t-[4px] ${w.sets === 0 ? "bg-surface-2" : STATUS[volumeStatus(w.sets)].bar} ${
+                  w.from === selected ? "" : "opacity-60"
+                }`}
+                style={{ height: w.sets ? h(w.sets) : "3px" }}
+              />
+            </li>
+          ))}
+        </ol>
+      </div>
+      <div className="mt-1 flex gap-1.5 text-center text-[10px] tabular-nums text-muted" aria-hidden>
+        {weeks.map((w) => (
+          <span key={w.from} className={`flex-1 ${w.from === selected ? "font-bold text-ink" : ""}`}>
+            {fmt(w.sets)}
+          </span>
+        ))}
+      </div>
+    </div>
   );
 }
 

@@ -1,6 +1,6 @@
 import standardsJson from "./strength-standards.json";
 import { EXERCISE_BY_SLUG } from "./exercises";
-import { GROUP_BY_ID, MUSCLE_BY_ID, type MuscleGroupId } from "./muscles";
+import { GROUP_BY_ID, MUSCLE_BY_ID, MUSCLE_GROUPS, type MuscleGroupId } from "./muscles";
 
 /**
  * Ranks per oefening op basis van krachtstandaarden van StrengthLevel.com (per oefening, geslacht
@@ -46,7 +46,7 @@ export type LogLike = { weight: number | null; reps: number | null };
 
 export type ExerciseRank = {
   slug: string;
-  /** 0..7: tier-index plus voortgang binnen de tier. */
+  /** 0..7: tier-index plus voortgang binnen de tier (Olympiër: 6..7). */
   score: number;
   tier: Tier;
   tierIndex: number;
@@ -102,10 +102,19 @@ function thresholds(levels: number[]): number[] {
   return [beg, nov, int, adv, elite, elite + Math.max(elite - adv, 1)];
 }
 
+/** Hoogste score: net onder TIERS.length, zodat floor(score) altijd een geldige tier-index is. */
+const MAX_SCORE = TIERS.length - 0.001;
+
 function scoreFor(value: number, th: number[]): { score: number; tierIndex: number; progress: number; nextAt: number | null } {
   let tierIndex = 0;
   while (tierIndex < th.length && value >= th[tierIndex]) tierIndex++;
-  if (tierIndex >= th.length) return { score: TIERS.length, tierIndex: TIERS.length - 1, progress: 1, nextAt: null };
+  if (tierIndex >= th.length) {
+    // Olympiër: score 6..7 (net als elke andere tier één punt breed), op basis van hoe ver je boven de grens zit.
+    const top = th[th.length - 1];
+    const step = Math.max(top - th[th.length - 2], 1e-6);
+    const beyond = Math.min(1, Math.max(0, (value - top) / step));
+    return { score: Math.min(MAX_SCORE, TIERS.length - 1 + beyond), tierIndex: TIERS.length - 1, progress: 1, nextAt: null };
+  }
   const lo = tierIndex === 0 ? Math.min(0, th[0]) : th[tierIndex - 1];
   const hi = th[tierIndex];
   const progress = hi > lo ? Math.min(1, Math.max(0, (value - lo) / (hi - lo))) : 0;
@@ -161,31 +170,130 @@ export function rankExercise(
 
 export type GroupRank = { group: MuscleGroupId; score: number; tier: Tier; exercises: ExerciseRank[] };
 
+export type OverallRank = {
+  score: number;
+  tier: Tier;
+  /** Hoeveel grote spiergroepen meetellen, van het totaal aantal grote spiergroepen. */
+  coverage?: { groups: number; of: number };
+  /**
+   * Voorlopig: minder dan de helft van de grote spiergroepen heeft een rang. De totaalrang zegt dan
+   * nog weinig (wie alleen curls doet, is niet "Diamant" over de hele linie).
+   */
+  provisional?: boolean;
+};
+
+/** Grote spiergroepen (zie muscles.ts): daarop baseren we de dekking van de totaalrang. */
+export const MAJOR_GROUPS: MuscleGroupId[] = MUSCLE_GROUPS.filter((g) => g.major).map((g) => g.id);
+/** Vanaf zoveel grote spiergroepen telt de totaalrang als definitief. */
+export const MIN_OVERALL_GROUPS = Math.ceil(MAJOR_GROUPS.length / 2);
+
 /**
  * Rang per spiergroep (gemiddelde van de 3 beste oefeningen met die groep als hoofdgroep)
- * en een totaalrang (gemiddelde van de spiergroepen).
+ * en een totaalrang (gemiddelde van de spiergroepen). Elke tier is één punt breed (Brons 0..1,
+ * …, Olympiër 6..7), dus het gemiddelde valt in dezelfde tier-grenzen als een losse oefening.
  */
-export function aggregateRanks(ranks: ExerciseRank[]): { groups: GroupRank[]; overall: { score: number; tier: Tier } | null } {
+export function aggregateRanks(ranks: ExerciseRank[]): { groups: GroupRank[]; overall: OverallRank | null } {
   const byGroup = new Map<MuscleGroupId, ExerciseRank[]>();
   for (const r of ranks) {
     const ex = EXERCISE_BY_SLUG[r.slug];
     if (!ex) continue;
     const group = MUSCLE_BY_ID[ex.primary[0]].group;
-    byGroup.set(group, [...(byGroup.get(group) ?? []), r]);
+    let list = byGroup.get(group);
+    if (!list) byGroup.set(group, (list = []));
+    list.push(r);
   }
   const groups: GroupRank[] = [...byGroup].map(([group, list]) => {
-    const top = [...list].sort((a, b) => b.score - a.score).slice(0, 3);
+    const sorted = [...list].sort((a, b) => b.score - a.score);
+    const top = sorted.slice(0, 3);
     const score = top.reduce((s, r) => s + r.score, 0) / top.length;
-    return { group, score, tier: tierFor(score), exercises: list.sort((a, b) => b.score - a.score) };
+    return { group, score, tier: tierFor(score), exercises: sorted };
   });
   groups.sort((a, b) => b.score - a.score);
   if (!groups.length) return { groups, overall: null };
   const score = groups.reduce((s, g) => s + g.score, 0) / groups.length;
-  return { groups, overall: { score, tier: tierFor(score) } };
+  const covered = groups.filter((g) => MAJOR_GROUPS.includes(g.group)).length;
+  return {
+    groups,
+    overall: {
+      score,
+      tier: tierFor(score),
+      coverage: { groups: covered, of: MAJOR_GROUPS.length },
+      provisional: covered < MIN_OVERALL_GROUPS,
+    },
+  };
+}
+
+/**
+ * Eerlijke vergelijking van twee personen: alleen over de spiergroepen die beiden getraind hebben.
+ * `diff` > 0 betekent dat `mine` voor staat. null als er geen gedeelde spiergroepen zijn.
+ */
+export function compareGroups(mine: GroupRank[], theirs: GroupRank[]): { shared: number; mine: number; theirs: number; diff: number } | null {
+  const other = new Map(theirs.map((g) => [g.group, g.score]));
+  const shared = mine.filter((g) => other.has(g.group));
+  if (!shared.length) return null;
+  const a = shared.reduce((s, g) => s + g.score, 0) / shared.length;
+  const b = shared.reduce((s, g) => s + other.get(g.group)!, 0) / shared.length;
+  return { shared: shared.length, mine: a, theirs: b, diff: a - b };
+}
+
+/** Oefeningen die het dichtst bij hun volgende tier zitten (hoogste voortgang eerst). */
+export function closestToNextTier(ranks: ExerciseRank[], n = 3): ExerciseRank[] {
+  return ranks
+    .filter((r) => r.nextAt != null && r.progress < 1)
+    .sort((a, b) => b.progress - a.progress || b.score - a.score)
+    .slice(0, n);
+}
+
+/** Bekende basisoefeningen per spiergroep, als voorbeeld om een rang te halen. */
+const GROUP_SUGGESTIONS: string[] = [
+  "bench-press",
+  "dumbbell-bench-press",
+  "overhead-press",
+  "dumbbell-shoulder-press",
+  "lateral-raise",
+  "triceps-pushdown-rope",
+  "skull-crusher",
+  "dips",
+  "barbell-curl",
+  "dumbbell-curl",
+  "lat-pulldown",
+  "pull-up",
+  "barbell-row",
+  "seated-cable-row",
+  "dumbbell-row",
+  "hanging-leg-raise",
+  "crunch",
+  "cable-crunch",
+  "hip-thrust",
+  "glute-bridge",
+  "back-squat",
+  "leg-press",
+  "leg-extension",
+  "romanian-deadlift",
+  "lying-leg-curl",
+  "seated-leg-curl",
+];
+
+/** Een paar oefeningen met een krachtstandaard die vooral deze spiergroep trainen. */
+export function rankableExercisesFor(group: MuscleGroupId, n = 2): string[] {
+  const matches = (slug: string) => {
+    const ex = EXERCISE_BY_SLUG[slug];
+    return !!ex && !!STANDARDS[slug] && MUSCLE_BY_ID[ex.primary[0]]?.group === group;
+  };
+  const preferred = GROUP_SUGGESTIONS.filter(matches);
+  const rest = Object.keys(STANDARDS)
+    .filter((s) => matches(s) && !preferred.includes(s))
+    .sort();
+  return [...preferred, ...rest].slice(0, n);
 }
 
 export function tierFor(score: number): Tier {
   return TIERS[Math.min(TIERS.length - 1, Math.max(0, Math.floor(score)))];
+}
+
+/** Voortgang binnen de huidige tier (0..1); in de hoogste tier altijd vol. */
+export function tierProgress(score: number): number {
+  return Math.floor(score) >= TIERS.length - 1 ? 1 : Math.max(0, score % 1);
 }
 
 /** Voorbeeld-set om de volgende tier te halen, bijv. "85 kg × 5". */

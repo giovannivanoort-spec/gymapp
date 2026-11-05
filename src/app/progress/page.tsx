@@ -1,43 +1,109 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
-import { useUserId } from "@/components/AuthProvider";
-import { ChevronRightIcon } from "@/components/Icons";
-import { LineChart } from "@/components/LineChart";
+import { useAuth, useUserId } from "@/components/AuthProvider";
+import { ArrowDownIcon, ArrowUpIcon } from "@/components/Icons";
 import { MonthCalendar } from "@/components/MonthCalendar";
+import { DataStatus } from "@/components/platform/DataStatus";
+import { LoadError } from "@/components/platform/LoadError";
 import { ProgressBodyweight } from "@/components/ProgressBodyweight";
 import { WeeklyVolume } from "@/components/WeeklyVolume";
-import { formatDate, toISODate } from "@/lib/dates";
-import { EXERCISE_BY_SLUG } from "@/lib/exercises";
-import { formatSet, nl, sessionsBySlug, useHistory, type HistorySet, type Session } from "@/lib/history";
-import { estimate1RM } from "@/lib/ranks";
+import { DayDetail, type PlannedWorkout } from "@/components/progress/DayDetail";
+import { ExerciseProgress } from "@/components/progress/ExerciseProgress";
+import { RankSummaryCard } from "@/components/progress/RankSummaryCard";
+import { RecentPRs } from "@/components/progress/RecentPRs";
+import { Records } from "@/components/progress/Records";
+import { TrainingRhythm } from "@/components/progress/TrainingRhythm";
+import { toISODate } from "@/lib/dates";
+import { nl, sessionsBySlug, useHistoryState, type HistorySet, type Session } from "@/lib/history";
+import { exerciseName, monthRecap, recentPRs } from "@/lib/progress/records";
+import { useSafeCached } from "@/lib/progress/safeCache";
 import { supabase } from "@/lib/supabase";
 
+const TABS = [
+  { id: "overzicht", label: "Overzicht" },
+  { id: "volume", label: "Volume" },
+  { id: "oefeningen", label: "Oefeningen" },
+  { id: "gewicht", label: "Gewicht" },
+] as const;
+type TabId = (typeof TABS)[number]["id"];
+
 export default function ProgressPage() {
+  return (
+    <Suspense
+      fallback={
+        <AppShell title="Progressie">
+          <ProgressSkeleton />
+        </AppShell>
+      }
+    >
+      <Progress />
+    </Suspense>
+  );
+}
+
+function ProgressSkeleton() {
+  return (
+    <div className="space-y-3" aria-busy="true" aria-label="Progressie laden">
+      <div className="skeleton h-11" />
+      <div className="skeleton h-80" />
+      <div className="skeleton h-40" />
+    </div>
+  );
+}
+
+type PlannedRow = { id: string; date: string; title: string; groups: { name: string } | null };
+
+async function fetchPlanned(from: string, to: string): Promise<PlannedWorkout[]> {
+  const { data, error } = await supabase
+    .from("workouts")
+    .select("id, date, title, groups!inner(name)")
+    .gte("date", from)
+    .lte("date", to)
+    .order("date");
+  if (error) throw error;
+  return ((data ?? []) as unknown as PlannedRow[]).map((w) => ({ id: w.id, date: w.date, title: w.title, group: w.groups?.name ?? null }));
+}
+
+function Progress() {
   const userId = useUserId();
+  const { profile } = useAuth();
+  const router = useRouter();
+  const params = useSearchParams();
+  const tabParam = params.get("tab");
+  const tab: TabId = TABS.some((t) => t.id === tabParam) ? (tabParam as TabId) : "overzicht";
+
   // Gedeelde, gecachete geschiedenis: direct zichtbaar als je eerder op Home of Ranks was.
-  const history = useHistory(userId) ?? null;
+  const historyState = useHistoryState(userId);
+  const history = historyState.data;
   const [month, setMonth] = useState(() => {
     const d = new Date();
     return new Date(d.getFullYear(), d.getMonth(), 1);
   });
-  const [planned, setPlanned] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<string | null>(null);
   const [exercise, setExercise] = useState<string | null>(null);
+  // Bezochte tabs blijven gemonteerd (verborgen), zodat gekozen maatstaf, periode en week blijven staan.
+  const [visited, setVisited] = useState<ReadonlySet<TabId>>(() => new Set([tab]));
+  if (!visited.has(tab)) setVisited(new Set([...visited, tab]));
+  const tabsRef = useRef<HTMLDivElement | null>(null);
+  const tabButtons = useRef(new Map<TabId, HTMLButtonElement>());
+  const chartRef = useRef<HTMLElement | null>(null);
 
-  // Geplande groepstrainingen in de getoonde maand.
-  useEffect(() => {
-    const from = toISODate(month);
-    const to = toISODate(new Date(month.getFullYear(), month.getMonth() + 1, 0));
-    supabase
-      .from("workouts")
-      .select("date, groups!inner(id)")
-      .gte("date", from)
-      .lte("date", to)
-      .then(({ data }) => setPlanned(new Set((data ?? []).map((w) => w.date))));
-  }, [month]);
+  // Geplande groepstrainingen in de getoonde maand; per maand onthouden, dus terugbladeren is direct.
+  const monthKey = toISODate(month).slice(0, 7);
+  const {
+    data: plannedList,
+    error: plannedError,
+    retry: retryPlanned,
+  } = useSafeCached(
+    `progress:planned:${userId}:${monthKey}`,
+    () => fetchPlanned(toISODate(month), toISODate(new Date(month.getFullYear(), month.getMonth() + 1, 0))),
+    { persist: true, maxAge: 60_000 },
+  );
+  const planned = useMemo(() => new Set((plannedList ?? []).map((w) => w.date)), [plannedList]);
 
   const sessions = useMemo(() => (history ? sessionsBySlug(history) : new Map<string, Session[]>()), [history]);
 
@@ -47,332 +113,382 @@ export default function ProgressPage() {
     return map;
   }, [history]);
 
-  // Standaard: de laatste getrainde dag selecteren.
-  const lastTrained = useMemo(() => [...trained.keys()].sort().at(-1) ?? null, [trained]);
-  const day = selected ?? lastTrained;
+  const trainedDays = useMemo(() => [...trained.keys()], [trained]);
 
-  const exercises = useMemo(
-    () => [...sessions].sort((a, b) => b[1].length - a[1].length).map(([slug]) => slug),
-    [sessions],
+  // Standaard: de laatste getrainde dag in de getoonde maand, anders vandaag (als die in beeld is).
+  const today = toISODate();
+  const lastTrainedInMonth = useMemo(
+    () =>
+      [...trained.keys()]
+        .filter((d) => d.startsWith(monthKey) && d <= today)
+        .sort()
+        .at(-1) ?? null,
+    [trained, monthKey, today],
   );
-  const currentExercise = exercise ?? exercises[0] ?? null;
+  // Een keuze uit een andere maand telt niet: dan weer de standaard van de getoonde maand.
+  const chosen = selected?.startsWith(monthKey) ? selected : null;
+  const day = chosen ?? lastTrainedInMonth ?? (today.startsWith(monthKey) ? today : null);
+  const changeMonth = useCallback((m: Date) => {
+    setMonth(m);
+    setSelected(null);
+  }, []);
 
-  const monthKey = toISODate(month).slice(0, 7);
-  const monthSets = (history ?? []).filter((s) => s.date.startsWith(monthKey) && (s.reps ?? 0) > 0);
-  const monthStats = {
-    sessions: new Set(monthSets.map((s) => s.workoutId)).size,
-    sets: monthSets.length,
-    volume: monthSets.reduce((v, s) => v + (s.weight ?? 0) * (s.reps ?? 0), 0),
-  };
+  const exercises = useMemo(() => [...sessions].sort((a, b) => b[1].length - a[1].length).map(([slug]) => slug), [sessions]);
+  const currentExercise = exercise && sessions.has(exercise) ? exercise : (exercises[0] ?? null);
+  const prs = useMemo(() => recentPRs(sessions), [sessions]);
+
+  // Maandcijfers, vergeleken met dezelfde periode van de vorige maand (lopende maand: tot vandaag).
+  const monthStats = useMemo(() => {
+    const prevMonth = new Date(month.getFullYear(), month.getMonth() - 1, 1);
+    const prevKey = toISODate(prevMonth).slice(0, 7);
+    const isCurrent = today.startsWith(monthKey);
+    const dayLimit = isCurrent ? Number(today.slice(8, 10)) : 31;
+    const thisMonth = statsFor(history ?? [], (d) => d.startsWith(monthKey));
+    const prev = statsFor(history ?? [], (d) => d.startsWith(prevKey) && Number(d.slice(8, 10)) <= dayLimit);
+    const prevName = prevMonth.toLocaleDateString("nl-NL", { month: "short" }).replace(".", "");
+    const monthName = month.toLocaleDateString("nl-NL", { month: "long" });
+    return {
+      ...thisMonth,
+      prev,
+      prevLabel: isCurrent ? `t.o.v. zelfde periode ${prevName}` : `t.o.v. ${prevName}`,
+      recapLabel: isCurrent ? "deze maand" : `in ${monthName}`,
+    };
+  }, [history, month, monthKey, today]);
+  const recap = useMemo(() => monthRecap(sessions, monthKey), [sessions, monthKey]);
+
+  const goTab = useCallback(
+    (next: TabId) => {
+      const sp = new URLSearchParams(params.toString());
+      if (next === "overzicht") sp.delete("tab");
+      else sp.set("tab", next);
+      const qs = sp.toString();
+      router.replace(qs ? `/progress?${qs}` : "/progress", { scroll: false });
+      // Als je al voorbij de tabs gescrold bent: terug naar het begin van de inhoud.
+      const wrapper = tabsRef.current?.parentElement;
+      if (wrapper) {
+        const header = document.querySelector("header")?.getBoundingClientRect().height ?? 0;
+        const target = wrapper.getBoundingClientRect().top + window.scrollY - header - 16;
+        if (window.scrollY > target) window.scrollTo({ top: Math.max(0, target) });
+      }
+    },
+    [params, router],
+  );
+
+  /** Pijltjes links/rechts, Home en End wisselen van tab (en verplaatsen de focus mee). */
+  const onTabKey = useCallback(
+    (e: React.KeyboardEvent<HTMLButtonElement>) => {
+      const i = TABS.findIndex((t) => t.id === tab);
+      let next = -1;
+      if (e.key === "ArrowRight") next = (i + 1) % TABS.length;
+      else if (e.key === "ArrowLeft") next = (i - 1 + TABS.length) % TABS.length;
+      else if (e.key === "Home") next = 0;
+      else if (e.key === "End") next = TABS.length - 1;
+      if (next < 0) return;
+      e.preventDefault();
+      const id = TABS[next].id;
+      goTab(id);
+      tabButtons.current.get(id)?.focus();
+    },
+    [goTab, tab],
+  );
+
+  /** Oefening tonen (vanuit records of recente records) en naar de grafiek scrollen. */
+  const pendingScroll = useRef(false);
+  const scrollToChart = useCallback(() => {
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    chartRef.current?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+  }, []);
+  const openExercise = useCallback(
+    (slug: string) => {
+      setExercise(slug);
+      if (tab === "oefeningen") return scrollToChart();
+      pendingScroll.current = true;
+      goTab("oefeningen");
+    },
+    [goTab, tab, scrollToChart],
+  );
+  useEffect(() => {
+    if (tab !== "oefeningen" || !pendingScroll.current) return;
+    pendingScroll.current = false;
+    scrollToChart();
+  }, [tab, scrollToChart]);
+
+  // De tabbalk plakt direct onder de (sticky) kop, wat de hoogte daarvan ook is (notch, titel).
+  const stickyTabs = useCallback((el: HTMLDivElement | null) => {
+    tabsRef.current = el;
+    if (!el) return;
+    const header = document.querySelector("header");
+    if (!header) return;
+    const ro = new ResizeObserver(() => {
+      el.style.top = `${Math.round(header.getBoundingClientRect().height)}px`;
+    });
+    ro.observe(header);
+    return () => ro.disconnect();
+  }, []);
 
   return (
     <AppShell title="Progressie">
-      {history === null ? (
-        <div className="space-y-3">
-          <div className="skeleton h-80" />
-          <div className="skeleton h-40" />
-        </div>
+      {history === undefined ? (
+        historyState.error ? (
+          <LoadError
+            error={historyState.error}
+            onRetry={historyState.retry}
+            retrying={historyState.refreshing}
+            title="Kon je trainingen niet laden"
+          />
+        ) : (
+          <SlowLoading onRetry={historyState.retry} />
+        )
       ) : history.length === 0 ? (
         <div className="space-y-7">
-          <div className="card space-y-2 text-sm text-muted">
+          <div className="card animate-scale-in space-y-3 text-sm text-muted">
             <p className="font-semibold text-ink">Nog geen trainingen gelogd</p>
-            <p>Zodra je sets invult bij een training, zie je hier je kalender, grafieken en records.</p>
+            <p>Zodra je sets invult bij een training, zie je hier je kalender, volume, grafieken en records.</p>
+            <div className="flex gap-2">
+              <Link href="/" className="btn-primary flex-1">
+                Naar Home
+              </Link>
+              <button type="button" className="btn-ghost" onClick={historyState.retry} disabled={historyState.refreshing}>
+                {historyState.refreshing ? "Bezig…" : "Opnieuw laden"}
+              </button>
+            </div>
           </div>
           <ProgressBodyweight />
         </div>
       ) : (
-        <div className="space-y-7">
-          <section className="card animate-scale-in space-y-4">
-            <MonthCalendar
-              month={month}
-              onMonth={setMonth}
-              selected={day}
-              onSelect={setSelected}
-              trained={trained}
-              planned={planned}
-            />
-            <div className="grid grid-cols-3 border-t border-line pt-3 text-center">
-              <Stat value={monthStats.sessions} label="trainingen" />
-              <Stat value={monthStats.sets} label="sets" />
-              <Stat value={monthStats.volume >= 1000 ? `${nl(monthStats.volume / 1000)}t` : nl(monthStats.volume, 0)} label="kg volume" />
+        <div className="space-y-6">
+          <div ref={stickyTabs} className="sticky top-0 z-10 -mx-4 -mt-4 bg-bg/90 px-4 py-2.5 backdrop-blur">
+            <div
+              role="tablist"
+              aria-label="Onderdelen van progressie"
+              className="grid grid-cols-4 rounded-xl border border-line bg-surface-2 p-0.5 text-xs font-semibold"
+            >
+              {TABS.map((t) => (
+                <button
+                  key={t.id}
+                  ref={(el) => {
+                    if (el) tabButtons.current.set(t.id, el);
+                    else tabButtons.current.delete(t.id);
+                  }}
+                  type="button"
+                  role="tab"
+                  id={`tab-${t.id}`}
+                  aria-selected={tab === t.id}
+                  aria-controls={`panel-${t.id}`}
+                  tabIndex={tab === t.id ? 0 : -1}
+                  onClick={() => goTab(t.id)}
+                  onKeyDown={onTabKey}
+                  className={`rounded-[10px] px-1 py-2 transition ${tab === t.id ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink"}`}
+                >
+                  {t.label}
+                </button>
+              ))}
             </div>
-          </section>
+          </div>
 
-          {day && <DayDetail day={day} history={history} sessions={sessions} plannedOnly={planned.has(day) && !trained.has(day)} />}
+          <DataStatus state={historyState} showAge />
 
-          <WeeklyVolume history={history} />
+          <TabPanel id="overzicht" active={tab} visited={visited}>
+            <RankSummaryCard />
 
-          {currentExercise && (
-            <ExerciseProgress
-              slug={currentExercise}
-              options={exercises}
-              sessions={sessions.get(currentExercise) ?? []}
-              onChange={setExercise}
-            />
-          )}
+            <RecentPRs prs={prs} onOpen={openExercise} />
 
-          <ProgressBodyweight />
+            <section className="card space-y-4">
+              <MonthCalendar
+                month={month}
+                onMonth={changeMonth}
+                selected={day}
+                onSelect={setSelected}
+                trained={trained}
+                planned={planned}
+                monthsAhead={1}
+              />
+              {plannedError && (
+                <p role="status" className="flex items-center justify-between gap-2 rounded-xl bg-surface-2 px-3 py-2 text-xs text-muted">
+                  <span className="min-w-0">Geplande trainingen niet geladen.</span>
+                  <button type="button" onClick={retryPlanned} className="shrink-0 font-semibold text-accent">
+                    Opnieuw
+                  </button>
+                </p>
+              )}
+              <div className="space-y-3 border-t border-line pt-3">
+                <div className="grid grid-cols-3 text-center">
+                  <Stat
+                    value={monthStats.sessions}
+                    label={monthStats.sessions === 1 ? "training" : "trainingen"}
+                    delta={monthStats.sessions - monthStats.prev.sessions}
+                    show={monthStats.prev.sessions > 0}
+                  />
+                  <Stat
+                    value={monthStats.sets}
+                    label="sets"
+                    delta={monthStats.sets - monthStats.prev.sets}
+                    show={monthStats.prev.sets > 0}
+                  />
+                  <Stat
+                    value={monthStats.volume >= 1000 ? `${nl(monthStats.volume / 1000)} t` : `${nl(monthStats.volume, 0)} kg`}
+                    label="volume"
+                    delta={
+                      monthStats.prev.volume > 0
+                        ? Math.round(((monthStats.volume - monthStats.prev.volume) / monthStats.prev.volume) * 100)
+                        : 0
+                    }
+                    unit="%"
+                    show={monthStats.prev.volume > 0}
+                  />
+                </div>
+                {monthStats.prev.sets > 0 && <p className="text-center text-[11px] text-muted">{monthStats.prevLabel}</p>}
+                {(recap.prs > 0 || recap.mostImproved) && (
+                  <div className="flex flex-wrap justify-center gap-x-4 gap-y-1 rounded-xl bg-surface-2 px-3 py-2 text-xs">
+                    {recap.prs > 0 && (
+                      <span>
+                        <span className="font-bold tabular-nums text-accent">{recap.prs}</span>{" "}
+                        <span className="text-muted">
+                          {recap.prs === 1 ? "record" : "records"} {monthStats.recapLabel}
+                        </span>
+                      </span>
+                    )}
+                    {recap.mostImproved && (
+                      <button type="button" onClick={() => openExercise(recap.mostImproved!.slug)} className="min-w-0 truncate text-left">
+                        <span className="text-muted">Meest vooruit: </span>
+                        <span className="font-semibold">{exerciseName(recap.mostImproved.slug)}</span>{" "}
+                        <span className="font-semibold tabular-nums text-accent">+{nl(recap.mostImproved.pct)}%</span>
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </section>
 
-          <Records sessions={sessions} />
+            {day && (
+              <DayDetail day={day} history={history} sessions={sessions} planned={(plannedList ?? []).filter((p) => p.date === day)} />
+            )}
+
+            <section className="card">
+              <TrainingRhythm days={trainedDays} goal={profile?.weekly_goal ?? 3} />
+            </section>
+          </TabPanel>
+
+          <TabPanel id="volume" active={tab} visited={visited}>
+            <WeeklyVolume history={history} />
+          </TabPanel>
+
+          <TabPanel id="oefeningen" active={tab} visited={visited}>
+            {currentExercise && (
+              <ExerciseProgress
+                ref={chartRef}
+                slug={currentExercise}
+                options={exercises}
+                sessions={sessions.get(currentExercise) ?? []}
+                onChange={setExercise}
+              />
+            )}
+            <Records sessions={sessions} selected={currentExercise} onOpen={openExercise} />
+          </TabPanel>
+
+          <TabPanel id="gewicht" active={tab} visited={visited}>
+            <ProgressBodyweight />
+          </TabPanel>
         </div>
       )}
     </AppShell>
   );
 }
 
-function Stat({ value, label }: { value: number | string; label: string }) {
+/**
+ * Inhoud van één tab. Pas gemonteerd bij het eerste bezoek en daarna verborgen in plaats van
+ * weggegooid, zodat keuzes (maatstaf, periode, week) bij terugkeren nog staan. Bij zichtbaar
+ * worden speelt de fade-in opnieuw (de animatie start opnieuw na display: none).
+ */
+function TabPanel({ id, active, visited, children }: { id: TabId; active: TabId; visited: ReadonlySet<TabId>; children: React.ReactNode }) {
+  if (!visited.has(id)) return null;
   return (
-    <div className="[&:not(:first-child)]:border-l [&:not(:first-child)]:border-line">
-      <p className="text-xl font-extrabold tabular-nums">{value}</p>
-      <p className="text-xs text-muted">{label}</p>
+    <div
+      id={`panel-${id}`}
+      role="tabpanel"
+      aria-labelledby={`tab-${id}`}
+      hidden={active !== id}
+      tabIndex={-1}
+      className="animate-fade-in space-y-7 outline-none"
+    >
+      {children}
     </div>
   );
 }
 
-/** Resultaten van één dag, per training en oefening, met records gemarkeerd. */
-function DayDetail({
-  day,
-  history,
-  sessions,
-  plannedOnly,
-}: {
-  day: string;
-  history: HistorySet[];
-  sessions: Map<string, Session[]>;
-  plannedOnly: boolean;
-}) {
-  const sets = history.filter((s) => s.date === day);
-  const workouts = [...new Set(sets.map((s) => s.workoutId))];
-
+/** Skelet tijdens het laden; na een tijdje een uitleg en een knop om opnieuw te proberen. */
+function SlowLoading({ onRetry }: { onRetry: () => void }) {
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setSlow(true), 8000);
+    return () => clearTimeout(t);
+  }, []);
   return (
-    <section key={day} className="animate-fade-up space-y-3">
-      <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">{formatDate(day)}</h2>
-      {sets.length === 0 ? (
-        <div className="card text-sm text-muted">{plannedOnly ? "Er stond een training gepland, maar je hebt niets gelogd." : "Geen training op deze dag."}</div>
-      ) : (
-        workouts.map((wid) => {
-          const ws = sets.filter((s) => s.workoutId === wid);
-          const byExercise = [...new Set(ws.map((s) => s.workoutExerciseId))]
-            .map((weId) => ws.filter((s) => s.workoutExerciseId === weId).sort((a, b) => a.setNumber - b.setNumber))
-            .sort((a, b) => a[0].position - b[0].position);
-          return (
-            <div key={wid} className="card space-y-4">
-              <Link href={`/workouts/${wid}`} className="flex items-center justify-between gap-2">
-                <div>
-                  <p className="font-bold">{ws[0].workoutTitle}</p>
-                  {ws[0].groupName && <p className="text-xs text-muted">{ws[0].groupName}</p>}
-                </div>
-                <ChevronRightIcon className="text-muted" />
-              </Link>
-              {byExercise.map((exSets) => {
-                const slug = exSets[0].slug;
-                // Beste 1RM vóór deze dag, om records te herkennen.
-                const before = (sessions.get(slug) ?? []).filter((s) => s.date < day).map((s) => s.best1RM ?? 0);
-                const prevBest = Math.max(0, ...before);
-                const best = Math.max(0, ...exSets.map((s) => estimate1RM(s.weight ?? 0, s.reps ?? 0) ?? 0));
-                return (
-                  <div key={exSets[0].workoutExerciseId} className="space-y-1.5">
-                    <div className="flex items-baseline justify-between gap-2">
-                      <Link href={`/exercises/${slug}`} className="text-sm font-semibold hover:text-accent">
-                        {EXERCISE_BY_SLUG[slug]?.name ?? slug}
-                      </Link>
-                      <span className="text-xs text-muted">
-                        doel {exSets[0].targetSets} × {exSets[0].targetReps}
-                      </span>
-                    </div>
-                    <table className="w-full text-sm tabular-nums">
-                      <thead>
-                        <tr className="text-left text-[11px] uppercase tracking-wide text-muted">
-                          <th className="w-10 py-1 font-medium">Set</th>
-                          <th className="py-1 font-medium">Kg</th>
-                          <th className="py-1 font-medium">Reps</th>
-                          <th className="py-1 text-right font-medium">1RM</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {exSets.map((s) => {
-                          const e = estimate1RM(s.weight ?? 0, s.reps ?? 0);
-                          const isPR = e != null && e === best && before.length > 0 && e > prevBest;
-                          return (
-                            <tr key={s.setNumber} className="border-t border-line">
-                              <td className="py-1.5 text-muted">{s.setNumber}</td>
-                              <td className="py-1.5">{s.weight != null ? nl(s.weight) : "–"}</td>
-                              <td className="py-1.5">{s.reps ?? "–"}</td>
-                              <td className="py-1.5 text-right">
-                                {isPR && (
-                                  <span className="mr-2 rounded-md bg-accent/15 px-1.5 py-0.5 text-[10px] font-bold text-accent">PR</span>
-                                )}
-                                {e != null ? nl(e) : <span className="text-muted">–</span>}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                );
-              })}
-            </div>
-          );
-        })
-      )}
-    </section>
-  );
-}
-
-/** Grafiek + tabel van één oefening over tijd. */
-function ExerciseProgress({
-  slug,
-  options,
-  sessions,
-  onChange,
-}: {
-  slug: string;
-  options: string[];
-  sessions: Session[];
-  onChange: (slug: string) => void;
-}) {
-  const weighted = sessions.some((s) => s.best1RM != null);
-  const points = sessions
-    .filter((s) => (weighted ? s.best1RM != null : s.maxReps > 0))
-    .map((s) => ({ date: s.date, value: weighted ? s.best1RM! : s.maxReps, detail: formatSet(s.bestSet) }));
-  const first = points[0]?.value;
-  const last = points.at(-1)?.value;
-  const change = first != null && last != null && first > 0 ? ((last - first) / first) * 100 : null;
-  const rows = [...sessions].reverse();
-
-  return (
-    <section className="space-y-3">
-      <div className="flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">Progressie per oefening</h2>
-      </div>
-      <div className="card space-y-4">
-        <select
-          className="input"
-          value={slug}
-          onChange={(e) => onChange(e.target.value)}
-          aria-label="Kies een oefening"
-        >
-          {options.map((s) => (
-            <option key={s} value={s}>
-              {EXERCISE_BY_SLUG[s]?.name ?? s}
-            </option>
-          ))}
-        </select>
-
-        <div className="flex items-end justify-between gap-3">
-          <div>
-            <p className="text-xs text-muted">{weighted ? "Beste geschatte 1RM per training" : "Meeste reps per training"}</p>
-            <p className="text-2xl font-extrabold tabular-nums">
-              {last != null ? nl(last) : "–"} <span className="text-sm font-semibold text-muted">{weighted ? "kg" : "reps"}</span>
-            </p>
-          </div>
-          {change != null && points.length > 1 && (
-            <span
-              className={`rounded-lg px-2 py-1 text-sm font-semibold tabular-nums ${
-                change >= 0 ? "bg-accent/15 text-accent" : "bg-danger/15 text-danger"
-              }`}
-            >
-              {change >= 0 ? "+" : ""}
-              {nl(change)}% sinds start
+    <div className="space-y-3">
+      {slow && (
+        <div role="alert" className="card animate-fade-in flex items-center justify-between gap-3 text-sm">
+          <span className="min-w-0">
+            <span className="block font-semibold">Laden duurt langer dan normaal</span>
+            <span className="block text-xs text-muted">
+              {typeof navigator !== "undefined" && navigator.onLine === false
+                ? "Je bent offline. Zodra je verbinding hebt, laden je trainingen vanzelf."
+                : "Controleer je verbinding of probeer het opnieuw."}
             </span>
-          )}
+          </span>
+          <button
+            type="button"
+            className="btn-ghost shrink-0 px-3 py-1.5 text-xs"
+            onClick={() => {
+              setSlow(false);
+              onRetry();
+            }}
+          >
+            Opnieuw
+          </button>
         </div>
-
-        {points.length > 1 ? (
-          <LineChart points={points} unit={weighted ? "kg" : "reps"} />
-        ) : (
-          <p className="text-sm text-muted">Na een tweede training met deze oefening verschijnt hier een grafiek.</p>
-        )}
-
-        <div className="-mx-4 overflow-x-auto px-4">
-          <table className="w-full min-w-[420px] text-sm tabular-nums">
-            <thead>
-              <tr className="text-left text-[11px] uppercase tracking-wide text-muted">
-                <th className="py-1.5 font-medium">Datum</th>
-                <th className="py-1.5 font-medium">Beste set</th>
-                <th className="py-1.5 text-right font-medium">{weighted ? "1RM" : "Reps"}</th>
-                <th className="py-1.5 text-right font-medium">Volume</th>
-                <th className="py-1.5 text-right font-medium">Verschil</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((s, i) => {
-                const prev = rows[i + 1];
-                const v = weighted ? s.best1RM : s.maxReps;
-                const pv = prev ? (weighted ? prev.best1RM : prev.maxReps) : null;
-                const diff = v != null && pv != null ? v - pv : null;
-                return (
-                  <tr key={s.workoutId + s.date} className="border-t border-line">
-                    <td className="py-2">
-                      <Link href={`/workouts/${s.workoutId}`} className="hover:text-accent">
-                        {formatDate(s.date, { weekday: undefined, month: "short", year: "2-digit" })}
-                      </Link>
-                    </td>
-                    <td className="py-2">{formatSet(s.bestSet)}</td>
-                    <td className="py-2 text-right font-semibold">{v != null ? nl(v) : "–"}</td>
-                    <td className="py-2 text-right text-muted">{s.volume ? nl(s.volume, 0) : "–"}</td>
-                    <td
-                      className={`py-2 text-right ${diff == null || diff === 0 ? "text-muted" : diff > 0 ? "text-accent" : "text-danger"}`}
-                    >
-                      {diff == null ? "–" : `${diff > 0 ? "+" : ""}${nl(diff)}`}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </section>
+      )}
+      <ProgressSkeleton />
+    </div>
   );
 }
 
-/** Beste prestatie per oefening. */
-function Records({ sessions }: { sessions: Map<string, Session[]> }) {
-  const rows = [...sessions]
-    .map(([slug, list]) => {
-      const weighted = list.some((s) => s.best1RM != null);
-      const best = list.reduce((a, b) => ((weighted ? (b.best1RM ?? 0) > (a.best1RM ?? 0) : b.maxReps > a.maxReps) ? b : a));
-      return { slug, weighted, best, count: list.length };
-    })
-    .sort((a, b) => (EXERCISE_BY_SLUG[a.slug]?.name ?? a.slug).localeCompare(EXERCISE_BY_SLUG[b.slug]?.name ?? b.slug));
+function statsFor(history: HistorySet[], inPeriod: (date: string) => boolean) {
+  const sets = history.filter((s) => inPeriod(s.date) && (s.reps ?? 0) > 0);
+  return {
+    sessions: new Set(sets.map((s) => s.workoutId)).size,
+    sets: sets.length,
+    volume: sets.reduce((v, s) => v + (s.weight ?? 0) * (s.reps ?? 0), 0),
+  };
+}
 
+function Stat({
+  value,
+  label,
+  delta = 0,
+  unit = "",
+  show = false,
+}: {
+  value: number | string;
+  label: string;
+  /** Verschil met de vorige periode. */
+  delta?: number;
+  unit?: string;
+  show?: boolean;
+}) {
   return (
-    <section className="space-y-3">
-      <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">Records</h2>
-      <div className="card -mx-0 overflow-x-auto p-0">
-        <table className="w-full min-w-[460px] text-sm tabular-nums">
-          <thead>
-            <tr className="border-b border-line text-left text-[11px] uppercase tracking-wide text-muted">
-              <th className="px-4 py-2.5 font-medium">Oefening</th>
-              <th className="py-2.5 font-medium">Beste set</th>
-              <th className="py-2.5 text-right font-medium">1RM / reps</th>
-              <th className="py-2.5 text-right font-medium">Datum</th>
-              <th className="px-4 py-2.5 text-right font-medium">Sessies</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.slug} className="border-t border-line first:border-0">
-                <td className="px-4 py-2.5">
-                  <Link href={`/exercises/${r.slug}`} className="font-medium hover:text-accent">
-                    {EXERCISE_BY_SLUG[r.slug]?.name ?? r.slug}
-                  </Link>
-                </td>
-                <td className="py-2.5 text-muted">{formatSet(r.best.bestSet)}</td>
-                <td className="py-2.5 text-right font-semibold">
-                  {r.weighted ? `${nl(r.best.best1RM ?? 0)} kg` : `${r.best.maxReps} reps`}
-                </td>
-                <td className="py-2.5 text-right text-muted">
-                  {formatDate(r.best.date, { weekday: undefined, month: "short", year: "2-digit" })}
-                </td>
-                <td className="px-4 py-2.5 text-right text-muted">{r.count}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </section>
+    <div className="[&:not(:first-child)]:border-l [&:not(:first-child)]:border-line">
+      <p className="text-xl font-extrabold tabular-nums">{value}</p>
+      <p className="text-xs text-muted">{label}</p>
+      {show && (
+        <p
+          className={`mt-0.5 inline-flex items-center gap-0.5 text-[11px] font-semibold tabular-nums ${
+            delta > 0 ? "text-accent" : "text-muted"
+          }`}
+        >
+          {delta > 0 ? <ArrowUpIcon size={10} /> : delta < 0 ? <ArrowDownIcon size={10} /> : null}
+          {delta === 0 ? "gelijk" : `${Math.abs(delta)}${unit}`}
+        </p>
+      )}
+    </div>
   );
 }

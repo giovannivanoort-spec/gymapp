@@ -2,113 +2,137 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { BodyMap, BodyMapLegend } from "@/components/BodyMap";
 import { useAuth, useUserId } from "@/components/AuthProvider";
+import { ExternalIcon, PlusIcon } from "@/components/Icons";
+import { LineChart, type ChartPoint } from "@/components/LineChart";
+import { MuscleChips } from "@/components/MuscleChips";
+import { AddToTemplateSheet } from "@/components/planning/AddToTemplateSheet";
+import { GroupBest } from "@/components/planning/GroupBest";
+import { DataStatus } from "@/components/platform/DataStatus";
+import { MuscleList, useExerciseVideo, VideoPlayer } from "@/components/planning/ExerciseInfo";
+import { notify } from "@/components/planning/notify";
 import { RankBadge, TierProgress } from "@/components/RankBadge";
 import { describeRank } from "@/components/RankRow";
-import { formatDate } from "@/lib/dates";
+import { alternativesFor } from "@/lib/analysis";
+import { setCached } from "@/lib/cache";
+import { ageFrom, formatDate } from "@/lib/dates";
 import { EQUIPMENT_LABEL } from "@/lib/exercise-types";
-import { EXERCISES, EXERCISE_BY_SLUG } from "@/lib/exercises";
-import { GROUP_BY_ID, MUSCLE_BY_ID, type MuscleId } from "@/lib/muscles";
-import { DEFAULT_VIDEOS } from "@/lib/exercise-videos";
-import { errorMessage, supabase } from "@/lib/supabase";
-import type { SetLog } from "@/lib/types";
-import { parseYouTubeId, youtubeSearchUrl } from "@/lib/youtube";
-import { ExternalIcon } from "@/components/Icons";
+import { EXERCISE_BY_SLUG } from "@/lib/exercises";
+import { formatSet, nl, sessionsBySlug, useHistoryState, type Session } from "@/lib/history";
 import { rankExercise, tierLadder, type ExerciseRank } from "@/lib/ranks";
-import { fetchLogsBySlug } from "@/lib/useRanks";
-import { ageFrom } from "@/lib/dates";
-
-type HistoryLog = SetLog & { workout_exercises: { workout_id: string; workouts: { date: string; title: string } } };
+import { errorMessage, supabase } from "@/lib/supabase";
+import { parseYouTubeId, youtubeSearchUrl } from "@/lib/youtube";
 
 export default function ExerciseDetailPage() {
   const { slug } = useParams<{ slug: string }>();
   const ex = EXERCISE_BY_SLUG[slug];
   const userId = useUserId();
   const { profile } = useAuth();
-  const [rank, setRank] = useState<ExerciseRank | null | undefined>(undefined);
-  const [customVideo, setCustomVideo] = useState<string | null>(null);
+  const bodyweight = profile?.bodyweight_kg ?? null;
+  const sex = profile?.sex ?? null;
+  const age = ageFrom(profile?.birth_date);
+
+  // Video-instellingen horen bij één oefening: bij het wisselen van oefening opnieuw beginnen.
+  const [prevSlug, setPrevSlug] = useState(slug);
   const [editing, setEditing] = useState(false);
   const [link, setLink] = useState("");
-  const [history, setHistory] = useState<{ date: string; title: string; sets: HistoryLog[] }[]>([]);
-
-  useEffect(() => {
-    supabase
-      .from("exercise_videos")
-      .select("youtube_id")
-      .eq("exercise_slug", slug)
-      .maybeSingle()
-      .then(({ data }) => setCustomVideo(data?.youtube_id ?? null));
-
-    supabase
-      .from("set_logs")
-      .select("*, workout_exercises!inner(exercise_slug, workout_id, workouts!inner(date, title))")
-      .eq("user_id", userId)
-      .eq("workout_exercises.exercise_slug", slug)
-      .order("created_at", { ascending: false })
-      .limit(100)
-      .then(({ data }) => {
-        const sessions = new Map<string, { date: string; title: string; sets: HistoryLog[] }>();
-        for (const l of (data as HistoryLog[]) ?? []) {
-          const key = l.workout_exercise_id;
-          if (!sessions.has(key)) {
-            sessions.set(key, { date: l.workout_exercises.workouts.date, title: l.workout_exercises.workouts.title, sets: [] });
-          }
-          sessions.get(key)!.sets.push(l);
-        }
-        const list = [...sessions.values()].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 8);
-        list.forEach((s) => s.sets.sort((a, b) => a.set_number - b.set_number));
-        setHistory(list);
-      });
-  }, [slug, userId]);
-
-  useEffect(() => {
-    fetchLogsBySlug(userId, [slug]).then((logs) =>
-      setRank(rankExercise(slug, logs.get(slug) ?? [], profile?.bodyweight_kg ?? null, profile?.sex ?? null, ageFrom(profile?.birth_date))),
-    );
-  }, [slug, userId, profile?.bodyweight_kg, profile?.sex, profile?.birth_date]);
-
-  async function saveVideo() {
-    const id = parseYouTubeId(link);
-    if (!id) return alert("Dat lijkt geen geldige YouTube-link.");
-    const { error } = await supabase.from("exercise_videos").upsert({ exercise_slug: slug, youtube_id: id, updated_at: new Date().toISOString() });
-    if (error) return alert(errorMessage(error));
-    setCustomVideo(id);
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const [videoBusy, setVideoBusy] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
+  if (slug !== prevSlug) {
+    setPrevSlug(slug);
     setEditing(false);
     setLink("");
+    setLinkError(null);
+    setAddOpen(false);
   }
+
+  // Geschiedenis en rang komen uit de gedeelde (gecachete) trainingsgeschiedenis: direct zichtbaar
+  // en altijd van de oefening die nu open staat (geen losse verzoeken die elkaar kunnen inhalen).
+  // Met foutstatus: zonder cache en zonder verbinding toont de pagina een foutmelding met "Opnieuw"
+  // in plaats van een eindeloos skeleton.
+  const historyState = useHistoryState(userId || null);
+  const history = historyState.data;
+  const historyFailed = history === undefined && !!historyState.error;
+  const mine = useMemo(() => history?.filter((s) => s.slug === slug), [history, slug]);
+  const sessions = useMemo(() => (mine ? [...(sessionsBySlug(mine).get(slug) ?? [])].reverse() : undefined), [mine, slug]);
+  const rank = useMemo<ExerciseRank | null | undefined>(
+    () => (mine ? rankExercise(slug, mine.map((s) => ({ weight: s.weight, reps: s.reps })), bodyweight, sex, age) : undefined),
+    [mine, slug, bodyweight, sex, age],
+  );
+  const best = bestSession(sessions);
+  const chart = useMemo(() => progressPoints(sessions), [sessions]);
+
+  const video = useExerciseVideo(ex ? slug : null);
+  const videoKey = video.key ?? `ex-video:${slug}`;
+
+  const similar = useMemo(() => (ex ? alternativesFor(ex).slice(0, 8) : []), [ex]);
 
   if (!ex) {
     return (
       <AppShell title="Oefening" back="/exercises">
-        <div className="card text-sm text-muted">Oefening niet gevonden.</div>
+        <div className="card space-y-3 text-sm">
+          <p className="text-muted">Deze oefening bestaat niet (meer).</p>
+          <Link href="/exercises" className="btn-ghost min-h-11 w-full">
+            Naar alle oefeningen
+          </Link>
+        </div>
       </AppShell>
     );
   }
 
-  const defaultVideo = DEFAULT_VIDEOS[ex.slug];
-  const videoId = customVideo ?? defaultVideo?.id ?? null;
-  const similar = EXERCISES.filter((e) => e.slug !== ex.slug && e.primary.some((m) => ex.primary.includes(m))).slice(0, 6);
-  const best = history.flatMap((h) => h.sets).reduce<HistoryLog | null>((b, l) => ((l.weight ?? 0) > (b?.weight ?? 0) ? l : b), null);
+  const defaultVideo = video.fallback;
+  const customVideo = video.custom;
+  // Pas een video tonen als bekend is of er een eigen video is (anders laadt YouTube twee keer).
+  const videoReady = video.ready;
+  const videoId = video.id;
+
+  async function saveVideo() {
+    const id = parseYouTubeId(link);
+    if (!id) return setLinkError("Dat lijkt geen geldige YouTube-link. Kopieer de link via Delen in YouTube.");
+    setVideoBusy(true);
+    setLinkError(null);
+    const { error } = await supabase
+      .from("exercise_videos")
+      .upsert({ exercise_slug: slug, youtube_id: id, updated_at: new Date().toISOString() });
+    setVideoBusy(false);
+    if (error) return setLinkError(`Opslaan mislukt: ${errorMessage(error)}`);
+    setCached(videoKey, { id }, true);
+    setEditing(false);
+    setLink("");
+    notify("Video bijgewerkt");
+  }
+
+  async function restoreDefault() {
+    setVideoBusy(true);
+    setLinkError(null);
+    const { error } = await supabase.from("exercise_videos").delete().eq("exercise_slug", slug);
+    setVideoBusy(false);
+    if (error) return setLinkError(`Herstellen mislukt: ${errorMessage(error)}`);
+    setCached(videoKey, { id: null }, true);
+    setEditing(false);
+    setLink("");
+    notify(defaultVideo ? "Standaardvideo hersteld" : "Video weggehaald");
+  }
 
   return (
     <AppShell title={ex.name} back>
       <div className="space-y-5">
-        <div className="space-y-2">
+        <div className="space-y-3">
           <p className="text-muted">{ex.summary}</p>
-          <p className="text-xs text-muted">Materiaal: {EQUIPMENT_LABEL[ex.equipment]}</p>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="chip py-0.5">{EQUIPMENT_LABEL[ex.equipment]}</span>
+            <MuscleChips primary={ex.primary} />
+          </div>
+          <button className="btn-ghost min-h-11 w-full" onClick={() => setAddOpen(true)}>
+            <PlusIcon size={16} /> Toevoegen aan schema
+          </button>
         </div>
 
-        <RankSection
-          slug={ex.slug}
-          rank={rank}
-          bodyweight={profile?.bodyweight_kg ?? null}
-          sex={profile?.sex ?? null}
-          age={ageFrom(profile?.birth_date)}
-          equipment={ex.equipment}
-        />
+        <RankSection slug={ex.slug} rank={historyFailed ? null : rank} unknown={historyFailed} bodyweight={bodyweight} sex={sex} age={age} equipment={ex.equipment} />
 
         <section className="card space-y-3">
           <h2 className="font-bold">Spieren</h2>
@@ -121,39 +145,83 @@ export default function ExerciseDetailPage() {
         </section>
 
         <section className="card space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <h2 className="font-bold">Video</h2>
-            <button className="text-xs text-muted hover:text-ink" onClick={() => setEditing((v) => !v)}>
-              Andere video kiezen
-            </button>
+            {!editing && (
+              <button
+                className="-mr-2 min-h-11 rounded-lg px-3 text-xs text-muted hover:text-ink"
+                onClick={() => {
+                  setEditing(true);
+                  setLinkError(null);
+                }}
+              >
+                Andere video kiezen
+              </button>
+            )}
           </div>
-          {videoId ? (
-            <div className="aspect-video overflow-hidden rounded-xl bg-black">
-              <iframe
-                className="h-full w-full"
-                src={`https://www.youtube-nocookie.com/embed/${videoId}`}
-                title={`${ex.name} uitleg`}
-                allow="accelerometer; encrypted-media; gyroscope; picture-in-picture"
-                allowFullScreen
-              />
-            </div>
+          {!videoReady ? (
+            <div className="skeleton aspect-video" />
+          ) : videoId ? (
+            <VideoPlayer key={videoId} id={videoId} title={`${ex.name} uitleg`} />
           ) : (
-            <p className="text-sm text-muted">Geen video gevonden. Zoek er een op YouTube en plak de link via “Andere video kiezen”.</p>
+            <p className="text-sm text-muted">Nog geen video. Zoek er een op YouTube en plak de link via &quot;Andere video kiezen&quot;.</p>
           )}
-          {videoId && !customVideo && defaultVideo && (
+          {videoReady && videoId && !customVideo && defaultVideo && (
             <p className="text-xs text-muted">
               {defaultVideo.title} · {defaultVideo.channel}
             </p>
           )}
+          {videoReady && customVideo && <p className="text-xs text-muted">Video gekozen door iemand uit de app.</p>}
           {editing && (
-            <div className="flex gap-2">
-              <input className="input flex-1" value={link} onChange={(e) => setLink(e.target.value)} placeholder="Plak YouTube-link" />
-              <button className="btn-primary" onClick={saveVideo}>
-                Opslaan
-              </button>
-            </div>
+            <form
+              className="animate-fade-in space-y-2 rounded-xl bg-surface-2 p-3"
+              onSubmit={(e) => {
+                e.preventDefault();
+                saveVideo();
+              }}
+            >
+              <label className="label" htmlFor="video-link">
+                YouTube-link
+              </label>
+              <input
+                id="video-link"
+                className="input bg-surface"
+                value={link}
+                onChange={(e) => {
+                  setLink(e.target.value);
+                  setLinkError(null);
+                }}
+                placeholder="https://youtu.be/..."
+                inputMode="url"
+                autoComplete="off"
+                autoFocus
+                aria-invalid={!!linkError}
+                aria-describedby="video-help"
+              />
+              <p id="video-help" className={`text-xs ${linkError ? "text-danger" : "text-muted"}`}>
+                {linkError ?? "Deze video zien alle gebruikers van de app bij deze oefening."}
+              </p>
+              <div className="flex flex-wrap gap-2 pt-1">
+                <button type="submit" className="btn-primary min-h-11 flex-1" disabled={videoBusy || !link.trim()}>
+                  {videoBusy ? "Bezig…" : "Opslaan"}
+                </button>
+                <button type="button" className="btn-ghost min-h-11 flex-1" onClick={() => setEditing(false)} disabled={videoBusy}>
+                  Annuleren
+                </button>
+                {customVideo && (
+                  <button
+                    type="button"
+                    className="min-h-11 w-full rounded-lg text-xs text-muted hover:text-ink"
+                    onClick={restoreDefault}
+                    disabled={videoBusy}
+                  >
+                    {defaultVideo ? "Standaardvideo herstellen" : "Video weghalen"}
+                  </button>
+                )}
+              </div>
+            </form>
           )}
-          <a href={youtubeSearchUrl(ex.videoQuery)} target="_blank" rel="noreferrer" className="btn-ghost w-full">
+          <a href={youtubeSearchUrl(ex.videoQuery)} target="_blank" rel="noreferrer" className="btn-ghost min-h-11 w-full">
             Meer video&apos;s op YouTube <ExternalIcon size={15} />
           </a>
         </section>
@@ -177,7 +245,9 @@ export default function ExerciseDetailPage() {
           <ul className="space-y-2">
             {ex.tips.map((t, i) => (
               <li key={i} className="flex gap-2 text-sm">
-                <span className="text-warn">!</span>
+                <span className="font-bold text-warn" aria-hidden>
+                  !
+                </span>
                 <span>{t}</span>
               </li>
             ))}
@@ -185,36 +255,63 @@ export default function ExerciseDetailPage() {
         </section>
 
         <section className="card space-y-3">
-          <div className="flex items-baseline justify-between">
-            <h2 className="font-bold">Jouw geschiedenis</h2>
-            {best?.weight != null && <span className="text-xs text-muted">Record: {Number(best.weight)} kg × {best.reps}</span>}
-          </div>
-          {history.length === 0 ? (
+          <h2 className="font-bold">Jouw geschiedenis</h2>
+          {/* Fout zonder data: foutkaart met "Opnieuw proberen"; met oude data: een compacte regel erboven. */}
+          <DataStatus state={historyState} title="Geschiedenis laden mislukt" />
+          {historyFailed ? null : sessions === undefined ? (
+            <div className="space-y-2" aria-busy>
+              <div className="skeleton h-12" />
+              <div className="skeleton h-12" />
+            </div>
+          ) : sessions.length === 0 ? (
             <p className="text-sm text-muted">Je hebt deze oefening nog niet gelogd.</p>
           ) : (
-            <ul className="divide-y divide-line">
-              {history.map((h, i) => (
-                <li key={i} className="py-2 text-sm">
-                  <Link href={`/workouts/${h.sets[0].workout_exercises.workout_id}`} className="block">
-                    <p className="text-xs text-muted">
-                      {formatDate(h.date, { weekday: "short", month: "short" })} · {h.title}
-                    </p>
-                    <p>
-                      {h.sets.map((l) => `${l.weight != null ? `${Number(l.weight)}kg×` : ""}${l.reps ?? "–"}`).join(" · ")}
-                    </p>
-                  </Link>
-                </li>
-              ))}
-            </ul>
+            <>
+              {chart && (
+                <div className="space-y-1">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">{chart.title}</p>
+                  <LineChart points={chart.points} unit={chart.unit} ranges label={`${chart.title} ${ex.name}`} />
+                </div>
+              )}
+              {best && (
+                <div className="flex items-center justify-between gap-3 rounded-xl bg-surface-2 px-3 py-2.5">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">Beste set</p>
+                    <p className="font-bold tabular-nums">{formatSet(best.bestSet)}</p>
+                  </div>
+                  <div className="shrink-0 text-right text-xs text-muted">
+                    {best.best1RM != null && <p className="tabular-nums">ca. {nl(best.best1RM)} kg 1RM</p>}
+                    <p>{formatDate(best.date, { month: "short" })}</p>
+                  </div>
+                </div>
+              )}
+              <ul className="divide-y divide-line">
+                {sessions.slice(0, 8).map((h) => (
+                  <li key={h.sets[0].workoutExerciseId} className="text-sm">
+                    <Link href={`/workouts/${h.workoutId}`} className="-mx-2 block rounded-lg px-2 py-2 hover:bg-surface-2">
+                      <p className="text-xs text-muted">
+                        {formatDate(h.date, { weekday: "short", month: "short" })} · {h.workoutTitle}
+                      </p>
+                      <p className="tabular-nums">
+                        {h.sets.map((l) => `${l.weight != null ? `${nl(l.weight)}kg×` : ""}${l.reps ?? "–"}`).join(" · ")}
+                      </p>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+              {sessions.length > 8 && <p className="text-xs text-muted">Laatste 8 van {sessions.length} trainingen.</p>}
+            </>
           )}
         </section>
+
+        {userId && <GroupBest slug={ex.slug} userId={userId} />}
 
         {similar.length > 0 && (
           <section className="space-y-2">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">Vergelijkbare oefeningen</h2>
             <div className="flex flex-wrap gap-2">
               {similar.map((e) => (
-                <Link key={e.slug} href={`/exercises/${e.slug}`} className="chip hover:border-accent hover:text-accent">
+                <Link key={e.slug} href={`/exercises/${e.slug}`} className="chip min-h-11 py-1.5 hover:border-accent hover:text-accent">
                   {e.name}
                 </Link>
               ))}
@@ -222,36 +319,55 @@ export default function ExerciseDetailPage() {
           </section>
         )}
       </div>
+
+      <AddToTemplateSheet
+        exercise={ex}
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        onAdded={(t) => {
+          setAddOpen(false);
+          notify(`Toegevoegd aan "${t.name}"`);
+        }}
+      />
     </AppShell>
   );
 }
 
-/** Spieren met hun groep, bijv. "Borst · Bovenkant borst (clavicularis)". */
-function MuscleList({ title, muscles, main }: { title: string; muscles: MuscleId[]; main?: boolean }) {
-  return (
-    <div>
-      <p className="mb-1.5 text-xs text-muted">{title}</p>
-      <ul className="space-y-1">
-        {muscles.map((id) => {
-          const m = MUSCLE_BY_ID[id];
-          return (
-            <li key={id} className="flex items-baseline gap-2">
-              <span className={`mt-1 h-2 w-2 shrink-0 rounded-sm ${main ? "bg-[#ff4d5e]" : "bg-[#ffa24a]"}`} />
-              <span>
-                <span className="text-muted">{GROUP_BY_ID[m.group].name} · </span>
-                {m.name}
-              </span>
-            </li>
-          );
-        })}
-      </ul>
-    </div>
-  );
+/** Sessie met de hoogste geschatte 1RM (zelfde berekening als de ranks), anders die met de meeste reps. */
+function bestSession(sessions: Session[] | undefined): Session | null {
+  if (!sessions?.length) return null;
+  const withE = sessions.filter((s) => s.best1RM != null);
+  if (withE.length) return withE.reduce((a, b) => (b.best1RM! > a.best1RM! ? b : a));
+  return sessions.reduce((a, b) => (b.maxReps > a.maxReps ? b : a));
+}
+
+/**
+ * Voortgang per training: geschatte 1RM (of bij oefeningen zonder gewicht de meeste reps),
+ * met de records gemarkeerd. Pas zinvol vanaf twee trainingen.
+ */
+function progressPoints(sessions: Session[] | undefined): { points: ChartPoint[]; unit: string; title: string } | null {
+  if (!sessions || sessions.length < 2) return null;
+  const chrono = [...sessions].reverse();
+  const weighted = chrono.some((s) => s.best1RM != null);
+  let top = -Infinity;
+  const points: ChartPoint[] = [];
+  for (const s of chrono) {
+    const value = weighted ? s.best1RM : s.maxReps;
+    if (value == null || value <= 0) continue;
+    const pr = value > top;
+    if (pr) top = value;
+    points.push({ date: s.date, value, detail: formatSet(s.bestSet), pr: pr && points.length > 0 });
+  }
+  if (points.length < 2) return null;
+  return weighted
+    ? { points, unit: "kg", title: "Geschatte 1RM" }
+    : { points, unit: "reps", title: "Meeste reps in een set" };
 }
 
 function RankSection({
   slug,
   rank,
+  unknown,
   bodyweight,
   sex,
   age,
@@ -259,6 +375,8 @@ function RankSection({
 }: {
   slug: string;
   rank: ExerciseRank | null | undefined;
+  /** Geschiedenis kon niet geladen worden: rang is onbekend (geen eindeloos "..."). */
+  unknown?: boolean;
   bodyweight: number | null;
   sex: "male" | "female" | null;
   age: number | null;
@@ -276,7 +394,7 @@ function RankSection({
     return (
       <section className="card flex items-center justify-between gap-3 text-sm">
         <span className="text-muted">Vul je lichaamsgewicht en geslacht in om je rang voor deze oefening te zien.</span>
-        <Link href="/profile" className="btn-ghost shrink-0 px-3 py-1.5 text-xs">
+        <Link href="/profile" className="btn-ghost min-h-11 shrink-0 px-3 text-xs">
           Profiel
         </Link>
       </section>
@@ -289,13 +407,27 @@ function RankSection({
         <div className="min-w-0 flex-1 space-y-1.5">
           <p className="text-xs font-semibold uppercase tracking-wide text-muted">Jouw rang</p>
           <p className="text-xl font-bold" style={rank ? { color: rank.tier.to } : undefined}>
-            {rank === undefined ? "…" : rank ? rank.tier.name : "Nog geen rang"}
+            {unknown ? (
+              "Rang onbekend"
+            ) : rank === undefined ? (
+              <span className="skeleton inline-block h-6 w-28 align-middle" aria-label="Rang laden" />
+            ) : rank ? (
+              rank.tier.name
+            ) : (
+              "Nog geen rang"
+            )}
           </p>
           {rank && <TierProgress tierIndex={rank.tierIndex} progress={rank.progress} />}
         </div>
       </div>
       <p className="text-xs text-muted">
-        {rank ? describeRank(rank) : "Log een set (maximaal 12 reps) om je rang te krijgen."}
+        {unknown
+          ? "Je geschiedenis kon niet geladen worden, daarom is je rang nu onbekend."
+          : rank
+            ? describeRank(rank)
+            : rank === undefined
+              ? "Je rang wordt berekend uit je gelogde sets."
+              : "Log een set (maximaal 12 reps) om je rang te krijgen."}
       </p>
       {ladder && (
         <div>

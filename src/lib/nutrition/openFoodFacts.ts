@@ -7,7 +7,10 @@
  * Browsers kunnen geen User-Agent zetten; houd het aantal requests dus bescheiden
  * (de aanroeper debouncet zoekopdrachten).
  */
-import type { Food, Portion } from "./types";
+import type { Food, Per100, Portion } from "./types";
+
+/** Wat OFF wel weet van een product zonder (volledige) voedingswaarden: om het formulier alvast in te vullen. */
+export type PartialProduct = { name: string; brand: string | null; portions: Portion[]; per100: Partial<Per100> };
 
 export const OFF_ATTRIBUTION = "Productgegevens: Open Food Facts (ODbL)";
 
@@ -191,21 +194,59 @@ async function getJson(url: string, signal?: AbortSignal): Promise<{ status: num
 
 /** Zoek één product op via de barcode (EAN/UPC). null als het product onbekend is of geen bruikbare voedingswaarden heeft. */
 export async function lookupBarcode(code: string, opts?: { signal?: AbortSignal }): Promise<Food | null> {
-  const clean = code.replace(/\D/g, "");
-  if (clean.length < 6 || clean.length > 14) return null;
-  const found = await fetchProduct(clean, opts?.signal);
-  if (found !== undefined) return found;
-  // UPC-A (12 cijfers) staat bij OFF vaak als EAN-13 met een voorloopnul.
-  if (clean.length === 12) return (await fetchProduct(`0${clean}`, opts?.signal)) ?? null;
-  return null;
+  return (await lookupBarcodeDetailed(code, opts)).food;
 }
 
-/** undefined = product onbekend, null = bekend maar onbruikbaar (geen/onmogelijke voedingswaarden). */
-async function fetchProduct(code: string, signal?: AbortSignal): Promise<Food | null | undefined> {
+/**
+ * Als lookupBarcode, maar met de reden als er geen bruikbaar product is:
+ * "unknown" = OFF kent de barcode niet, "incomplete" = wel bekend, maar zonder (geldige) voedingswaarden.
+ */
+export async function lookupBarcodeDetailed(
+  code: string,
+  opts?: { signal?: AbortSignal },
+): Promise<
+  { food: Food; status: "found" } | { food: null; status: "incomplete"; partial: PartialProduct | null } | { food: null; status: "unknown" }
+> {
+  const clean = code.replace(/\D/g, "");
+  if (clean.length < 6 || clean.length > 14) return { food: null, status: "unknown" };
+  let found = await fetchProduct(clean, opts?.signal);
+  // UPC-A (12 cijfers) staat bij OFF vaak als EAN-13 met een voorloopnul.
+  if (found === undefined && clean.length === 12) found = await fetchProduct(`0${clean}`, opts?.signal);
+  if (found === undefined) return { food: null, status: "unknown" };
+  if (found.food) return { food: found.food, status: "found" };
+  return { food: null, status: "incomplete", partial: found.partial };
+}
+
+/** Plausibele waarde per 100 g, anders weglaten (de gebruiker vult hem dan zelf in). */
+function plausible(v: number | null, max: number): number | undefined {
+  return v != null && v >= 0 && v <= max ? round1(v) : undefined;
+}
+
+/** Naam, merk, porties en de voedingswaarden die wel kloppen, van een onvolledig OFF-product. */
+function partialOf(p: OffProduct): PartialProduct | null {
+  const name = formatName(cleanText(p.product_name_nl) || cleanText(p.product_name));
+  const n = p.nutriments ?? {};
+  const kj = num(n["energy-kj_100g"]) ?? num(n["energy_100g"]);
+  const kcal = num(n["energy-kcal_100g"]) ?? (kj != null ? kj / 4.184 : null);
+  const per100: Partial<Per100> = {
+    kcal: kcal != null && kcal >= 0 && kcal <= 950 ? Math.round(kcal) : undefined,
+    protein: plausible(num(n["proteins_100g"]), 100),
+    carbs: plausible(num(n["carbohydrates_100g"]), 100),
+    fat: plausible(num(n["fat_100g"]), 100),
+  };
+  const brand = firstBrand(p.brands);
+  if (!name && !brand) return null;
+  return { name, brand, portions: buildPortions(p), per100 };
+}
+
+/** undefined = product onbekend; anders het bruikbare product, of (onvolledig) wat OFF er wel van weet. */
+async function fetchProduct(code: string, signal?: AbortSignal): Promise<{ food: Food; partial?: undefined } | { food: null; partial: PartialProduct | null } | undefined> {
   const { data } = await getJson(`${PRODUCT_URL}${code}.json?fields=${PRODUCT_FIELDS}`, signal);
   const body = data as { status?: number; product?: OffProduct } | null;
   if (!body || body.status !== 1 || !body.product) return undefined;
-  return mapOffProduct({ ...body.product, code: body.product.code ?? code });
+  const product = { ...body.product, code: body.product.code ?? code };
+  const food = mapOffProduct(product);
+  return food ? { food } : { food: null, partial: partialOf(product) };
 }
 
 /** Maak een vrije zoekterm veilig voor de Lucene-achtige querytaal van search-a-licious. */
@@ -233,8 +274,8 @@ const isLocal = (p: OffProduct) =>
   Array.isArray(p.countries_tags) && p.countries_tags.some((c) => LOCAL_COUNTRIES.includes(c));
 
 /**
- * Zoek merkproducten. Eerst binnen Nederland/België; zijn dat er weinig, dan vullen we aan
- * met wereldwijde resultaten. NL/BE-producten staan altijd bovenaan.
+ * Zoek merkproducten binnen Nederland/België en wereldwijd tegelijk. Zijn er weinig NL/BE-resultaten,
+ * dan vullen we aan met de wereldwijde. NL/BE-producten staan altijd bovenaan.
  */
 export async function searchProducts(query: string, opts?: { signal?: AbortSignal }): Promise<Food[]> {
   const q = sanitizeQuery(query);
@@ -242,7 +283,13 @@ export async function searchProducts(query: string, opts?: { signal?: AbortSigna
   const signal = opts?.signal;
 
   const countryFilter = `countries_tags:(${LOCAL_COUNTRIES.map((c) => `"${c}"`).join(" OR ")})`;
-  const local = await searchOnce(`${q} ${countryFilter}`, signal);
+  // Beide zoekopdrachten tegelijk: scheelt een hele rondgang op mobiel. De wereldwijde mag mislukken
+  // zolang de lokale lukt (en andersom).
+  const [localRes, globalRes] = await Promise.allSettled([searchOnce(`${q} ${countryFilter}`, signal), searchOnce(q, signal)]);
+  if (signal?.aborted) throw new DOMException("Afgebroken", "AbortError");
+  if (localRes.status === "rejected" && globalRes.status === "rejected") throw localRes.reason;
+  const local = localRes.status === "fulfilled" ? localRes.value : [];
+  const global = globalRes.status === "fulfilled" ? globalRes.value : [];
 
   const seen = new Set<string>();
   const ranked: { food: Food; local: boolean }[] = [];
@@ -256,9 +303,7 @@ export async function searchProducts(query: string, opts?: { signal?: AbortSigna
   };
   add(local);
 
-  if (ranked.length < MIN_LOCAL_RESULTS) {
-    add(await searchOnce(q, signal));
-  }
+  if (ranked.length < MIN_LOCAL_RESULTS) add(global);
 
   // Stabiele sortering: NL/BE eerst, verder de relevantievolgorde van de API.
   return ranked

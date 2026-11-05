@@ -9,10 +9,25 @@ export function avatarHue(id: string) {
   return HUES[h % HUES.length];
 }
 
+/** Eerste "teken" zoals een mens het ziet (ook bij accenten in losse tekens of tekens buiten de BMP). */
+let segmenter: Intl.Segmenter | null | undefined;
+
+function firstGrapheme(word: string): string {
+  const w = word.normalize("NFC");
+  if (segmenter === undefined) {
+    segmenter = typeof Intl !== "undefined" && "Segmenter" in Intl ? new Intl.Segmenter("nl", { granularity: "grapheme" }) : null;
+  }
+  if (segmenter) {
+    const first = segmenter.segment(w)[Symbol.iterator]().next();
+    if (!first.done) return first.value.segment;
+  }
+  return Array.from(w)[0] ?? "";
+}
+
 function initials(name: string) {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return "?";
-  return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase();
+  return (firstGrapheme(parts[0]) + (parts.length > 1 ? firstGrapheme(parts[parts.length - 1]) : "")).toLocaleUpperCase("nl");
 }
 
 /** Ronde avatar met initialen. Optioneel een gekleurde ring (bijv. de kleur van iemands rang). */
@@ -48,15 +63,48 @@ export function Avatar({
   );
 }
 
-/** Profielknop rechtsboven. */
-export function ProfileButton({ id, name }: { id: string; name: string }) {
+/**
+ * Profielknop rechtsboven. Raakvlak van 44px (vingervriendelijk) rond een avatar van 34px;
+ * de negatieve marge houdt de avatar visueel op dezelfde plek tegen de rand.
+ * `badge`: aantal openstaande dingen (bijv. vriendschapsverzoeken), als teller op de avatar.
+ */
+export function ProfileButton({
+  id,
+  name,
+  size = 34,
+  badge = 0,
+  className = "",
+}: {
+  id: string;
+  name: string;
+  size?: number;
+  badge?: number;
+  className?: string;
+}) {
+  const base = name ? `Profiel van ${name}` : "Profiel";
+  const label = badge > 0 ? `${base}, ${badge} ${badge === 1 ? "vriendschapsverzoek" : "vriendschapsverzoeken"}` : base;
   return (
     <Link
       href="/profile"
-      aria-label="Profiel"
-      className="rounded-full transition-transform duration-200 hover:scale-105 active:scale-95"
+      aria-label={label}
+      className={`group -my-1.5 -mr-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-full ${className}`}
     >
-      <Avatar id={id} name={name} size={34} />
+      <span className="relative rounded-full transition-transform duration-200 group-hover:scale-105 group-active:scale-95">
+        <Avatar id={id} name={name} size={size} />
+        {badge > 0 && <CountBadge count={badge} className="absolute -right-1.5 -top-1" />}
+      </span>
     </Link>
+  );
+}
+
+/** Kleine teller (bijv. op een avatar of icoon). Boven 9 wordt het "9+", zodat hij rond blijft. */
+export function CountBadge({ count, className = "" }: { count: number; className?: string }) {
+  return (
+    <span
+      aria-hidden
+      className={`animate-badge-in flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-accent px-1 text-[10px] font-bold leading-none tabular-nums text-accent-ink ring-2 ring-bg ${className}`}
+    >
+      {count > 9 ? "9+" : count}
+    </span>
   );
 }

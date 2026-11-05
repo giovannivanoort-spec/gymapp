@@ -88,8 +88,27 @@ Tab *Voeding*: dagboek per maaltijd met een calorie-ring en macro-balken, en een
 ## Groep en meldingen
 
 - **Activiteit**-feed per groep: records, promoties en nieuwe leden, met een "Respect"-knop.
-- **Pushmeldingen** (Profiel → Meldingen): records en promoties van groepsleden, en elke ochtend een herinnering als er een training gepland staat (Vercel Cron, `vercel.json`). Op iPhone alleen als de app op het beginscherm staat.
+- **Pushmeldingen** (Profiel → Meldingen): records en promoties van groepsleden, plus geplande herinneringen (Vercel Cron, `vercel.json`). Op iPhone alleen als de app op het beginscherm staat.
+- **Geplande meldingen**: twee crons op dezelfde route [`/api/cron/reminders`](src/app/api/cron/reminders/route.ts):
+  - `0 7 * * *` (07:00 UTC): ochtend, "vandaag training gepland".
+  - `0 18 * * *` (18:00 UTC) met `?slot=evening`: avond, training van vandaag nog niet gelogd, morgen gepland en op zondag het weekoverzicht (samengevoegd tot hooguit één melding per persoon).
+  - Tijden zijn in UTC (in Nederland dus 08:00/19:00 in de winter, 09:00/20:00 in de zomer). Vercel Hobby staat alleen crons toe die hooguit één keer per dag draaien, vandaar twee losse dagelijkse crons.
 - Instellen: draai [`supabase/features.sql`](supabase/features.sql). In `.env.local` en op Vercel: `NEXT_PUBLIC_VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`, `CRON_SECRET` en `SUPABASE_SECRET_KEY` (alleen server).
+
+## Optionele upgrade-scripts (supabase/upgrade-*.sql)
+
+Na de basisscripts hierboven. Allemaal optioneel en idempotent (veilig om opnieuw te draaien): zonder een script werkt de app gewoon, met een eenvoudigere terugval.
+
+| Script | Wat het aanzet |
+| --- | --- |
+| [`upgrade-groups.sql`](supabase/upgrade-groups.sql) | Trainingen plannen en groep verlaten in één transactie, geen dubbele records/promoties in de feed, laatste trainer beschermd, lichtere ranglijst, "training afgerond" en live groepspagina. Na `schema.sql` en `features.sql`. |
+| [`upgrade-planning.sql`](supabase/upgrade-planning.sql) | Schema's delen met je groep ("Van je trainer", kolom `templates.group_id`). |
+| [`upgrade-social.sql`](supabase/upgrade-social.sql) | Vriendenlijst live, privé vriendcodes en account verwijderen. Na `friends.sql`; draai `friends.sql` daarna niet opnieuw (of draai dit script dan nog een keer). |
+| [`upgrade-platform.sql`](supabase/upgrade-platform.sql) | Meldingsvoorkeuren per soort, hooguit één geplande melding per persoon per moment (`push_log`), pushabonnement overnemen op een gedeeld toestel en eigen profiel via `get_my_profile`. |
+| [`upgrade-coach.sql`](supabase/upgrade-coach.sql) | Daglimiet van de AI-coach die niet te omzeilen is door gesprekken te verwijderen. Na `coach.sql`. |
+| [`upgrade-nutrition.sql`](supabase/upgrade-nutrition.sql) | Daglimiet voor foto-schattingen dichtzetten (eigen gebruik alleen lezen en toevoegen). Na `nutrition.sql`. |
+
+**Let op:** `upgrade-platform.sql` bevat onderaan een uitgecommentarieerd blok **"STAP 2"** dat de voedingskolommen van `profiles` afschermt voor anderen. Draai dat pas later, als de hele app is bijgewerkt en geen scherm meer `select("*")` op andermans profiel doet; het blok beschrijft ook hoe je het terugdraait.
 
 ## Ranks
 

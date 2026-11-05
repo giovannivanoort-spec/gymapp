@@ -1,5 +1,9 @@
 import { MUSCLE_BY_ID, type MuscleId } from "@/lib/muscles";
 
+/**
+ * Spieren als chips, in dezelfde kleurtaal als de spierkaart: hoofdspier in het accent,
+ * een spier die meehelpt gedempt.
+ */
 export function MuscleChips({
   primary,
   secondary = [],
@@ -22,7 +26,7 @@ export function MuscleChips({
           className={
             main
               ? "rounded-full bg-accent/15 px-2 py-0.5 text-xs font-medium text-accent"
-              : "rounded-full border border-line px-2 py-0.5 text-xs text-muted"
+              : "rounded-full border border-accent/20 px-2 py-0.5 text-xs text-muted"
           }
         >
           {MUSCLE_BY_ID[m].short}

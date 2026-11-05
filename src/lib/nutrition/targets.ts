@@ -14,10 +14,18 @@ export const ACTIVITY: { id: ActivityLevel; label: string; detail: string; facto
 ];
 
 export const GOALS: { id: NutritionGoal; label: string; detail: string }[] = [
-  { id: "cut", label: "Afvallen", detail: "≈ 450 kcal onder onderhoud" },
-  { id: "maintain", label: "Op gewicht blijven", detail: "Onderhoud" },
-  { id: "bulk", label: "Aankomen", detail: "≈ 300 kcal boven onderhoud" },
+  { id: "cut", label: "Afvallen", detail: "Ongeveer 450 kcal onder onderhoud, met extra eiwit om spier te behouden" },
+  { id: "maintain", label: "Onderhoud", detail: "Op gewicht blijven: je eet wat je verbruikt" },
+  { id: "bulk", label: "Aankomen", detail: "Ongeveer 300 kcal boven onderhoud, voor rustige spiergroei" },
 ];
+
+/** Grenzen voor handmatige doelen (gelijk aan de checks in de database). */
+export const TARGET_LIMITS = {
+  kcal: { min: 800, max: 8000, label: "Calorieën" },
+  protein: { min: 0, max: 600, label: "Eiwit" },
+  carbs: { min: 0, max: 1500, label: "Koolhydraten" },
+  fat: { min: 0, max: 500, label: "Vet" },
+} as const;
 
 export type NutritionProfile = Profile & {
   activity_level?: ActivityLevel | null;

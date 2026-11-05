@@ -1,202 +1,815 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { useUserId } from "@/components/AuthProvider";
 import { Celebration, type CelebrationData } from "@/components/Celebration";
-import { MuscleChips } from "@/components/MuscleChips";
-import { ageFrom, formatDate, timeAgo } from "@/lib/dates";
-import { DEFAULT_VIDEOS } from "@/lib/exercise-videos";
-import { EXERCISE_BY_SLUG } from "@/lib/exercises";
-import { rankExercise, type LogLike } from "@/lib/ranks";
-import { errorMessage, supabase } from "@/lib/supabase";
-import { fetchLogsBySlug } from "@/lib/useRanks";
-import { suggestNext } from "@/lib/progression";
+import { CalendarIcon, CheckIcon, ChevronRightIcon, UsersIcon } from "@/components/Icons";
+import { CommentThread } from "@/components/workout/CommentThread";
+import { commentsKey, fetchComments, fetchLogs, fetchWorkout, logsKey, useHistories, useLoad, workoutKey } from "@/components/workout/data";
+import { ExerciseCard, type PersonView } from "@/components/workout/ExerciseCard";
+import { syncFeedAfterChange } from "@/components/workout/feed";
+import { FinishSheet } from "@/components/workout/FinishSheet";
+import { GroupGrid } from "@/components/workout/GroupGrid";
+import { JumpCheck, type JumpCheckItem } from "@/components/workout/JumpCheck";
+import { writesFor } from "@/components/workout/localWrites";
+import {
+  beats,
+  bestOf,
+  detectAchievement,
+  doneSets,
+  fmtNum,
+  fmtSet,
+  isDone,
+  keyOfLog,
+  logsBySlug,
+  memberProfile,
+  mergeFailed,
+  mergeQueue,
+  normalizeLog,
+  parseReps,
+  parseWeight,
+  plannedSets,
+  prevSessions,
+  setKey,
+  upsertLocal,
+  validateSet,
+  type LogRow,
+  type PrevSession,
+} from "@/components/workout/logic";
+import { setAnchorId, type FillSet } from "@/components/workout/PersonSets";
+import type { SaveResult } from "@/components/workout/SetRow";
+import { toast } from "@/components/ui/Toast";
 import { postActivity } from "@/lib/activities";
-import { invalidate } from "@/lib/cache";
+import { getCached, invalidate, setCached } from "@/lib/cache";
+import { ageFrom, formatDate } from "@/lib/dates";
+import { EXERCISE_BY_SLUG } from "@/lib/exercises";
 import { invalidateHistory } from "@/lib/history";
-import { enqueue, isNetworkError, SYNCED_EVENT } from "@/lib/offlineQueue";
-import { PlateCalculator } from "@/components/PlateCalculator";
-import type { Comment, GroupMember, SetLog, Workout, WorkoutExercise } from "@/lib/types";
-import { ArrowUpIcon, ChatIcon, CheckIcon, ChevronRightIcon, CloseIcon, DumbbellIcon, PlayIcon, SparkleIcon } from "@/components/Icons";
+import {
+  dequeue,
+  enqueue,
+  enqueueActivity,
+  flushQueue,
+  markFailed,
+  readActivities,
+  readFailed,
+  removeFailed,
+  setOfOp,
+  SYNCED_EVENT,
+  useFailed,
+  useQueue,
+  withSetLock,
+  writeTimeout,
+} from "@/lib/offlineQueue";
+import type { LogLike } from "@/lib/ranks";
+import { errorMessage, isAuthError, isRetryableError, staleResponseCount, supabase } from "@/lib/supabase";
+import type { GroupMember, SetLog, WorkoutExercise } from "@/lib/types";
 
-type FullWorkout = Workout & { groups: { name: string } | null; workout_exercises: WorkoutExercise[] };
-type CommentWithAuthor = Comment & { profiles: { display_name: string } | null };
-type PrevLog = SetLog & { workout_exercises: { exercise_slug: string; workout_id: string; workouts: { date: string } } };
+const NO_MEMBERS: GroupMember[] = [];
+const NO_COMMENTS: never[] = [];
+const NO_LOGS: LogRow[] = [];
+const ON_CONFLICT = "workout_exercise_id,user_id,set_number";
+/** Record of promotie die nog niet kon worden bepaald (geschiedenis van die persoon nog niet geladen). */
+type PendingAnnouncement = { we: WorkoutExercise; uid: string; n: number; value: LogLike };
+type Check = JumpCheckItem & { key: string };
+
+/** Onder de vaste kop van de app (iets overlappend, de kop ligt erboven). */
+const STICKY_TOP = "top-[calc(max(0.75rem,env(safe-area-inset-top))+2.75rem)]";
 
 export default function WorkoutPage() {
+  return (
+    <Suspense fallback={<WorkoutSkeleton />}>
+      <Workout />
+    </Suspense>
+  );
+}
+
+function WorkoutSkeleton() {
+  return (
+    <AppShell title="Training" back>
+      <div className="space-y-4" aria-busy="true" aria-label="Training laden">
+        <div className="skeleton h-4 w-2/3" />
+        <div className="flex gap-2">
+          <div className="skeleton h-14 w-24" />
+          <div className="skeleton h-14 w-24" />
+          <div className="skeleton h-14 w-24" />
+        </div>
+        <div className="skeleton h-64" />
+        <div className="skeleton h-48" />
+      </div>
+    </AppShell>
+  );
+}
+
+function Workout() {
   const { id } = useParams<{ id: string }>();
   const userId = useUserId();
-  const [workout, setWorkout] = useState<FullWorkout | null | undefined>(undefined);
-  const [members, setMembers] = useState<GroupMember[]>([]);
-  const [logs, setLogs] = useState<SetLog[]>([]);
-  const [comments, setComments] = useState<CommentWithAuthor[]>([]);
-  const [prev, setPrev] = useState<Record<string, PrevLog[]>>({});
-  const [selectedUser, setSelectedUser] = useState<string | null>(null);
-  const forUser = selectedUser ?? userId;
-  // Ophogen = opnieuw laden (na eigen wijziging of een live update van een vriend).
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  /**
+   * Persoon uit de link: `?voor=<id>` (snelkoppeling voor trainers vanaf Home) of `?lid=<id>`
+   * (vanuit het live overzicht van de groep). Een onbekend id wordt hieronder genegeerd.
+   */
+  const linkedPerson = searchParams.get("voor") ?? searchParams.get("lid");
+
+  // ─── Laden (ook offline uit de cache) ───
+  const wk = useLoad(workoutKey(id), () => fetchWorkout(id), { persist: true, maxAge: 5_000 });
+  const bundle = wk.data;
+  const workout = bundle?.workout;
+  const members = bundle?.members ?? NO_MEMBERS;
+  const cm = useLoad(commentsKey(id), () => fetchComments(id), { persist: true, maxAge: 5_000 });
+  const comments = cm.data ?? NO_COMMENTS;
+
+  // Sets: lokale staat (voor directe updates), bewaard in de cache zodat de pagina offline werkt.
+  const [logsState, setLogsState] = useState(() => ({ id, logs: getCached<SetLog[]>(logsKey(id)) }));
+  if (logsState.id !== id) setLogsState({ id, logs: getCached<SetLog[]>(logsKey(id)) });
+  const serverLogs = logsState.id === id ? logsState.logs : undefined;
+  const [logsError, setLogsError] = useState(false);
   const [logsVersion, setLogsVersion] = useState(0);
-  const [commentsVersion, setCommentsVersion] = useState(0);
   const reloadLogs = useCallback(() => setLogsVersion((v) => v + 1), []);
-  const reloadComments = useCallback(() => setCommentsVersion((v) => v + 1), []);
+  /** Sets die nu worden opgeslagen (sleutel → waarden), tegen dubbel opslaan en verouderde updates. */
+  const pendingSaves = useRef(new Map<string, string>());
 
-  const exercises = useMemo(
-    () => [...(workout?.workout_exercises ?? [])].sort((a, b) => a.position - b.position),
-    [workout],
-  );
-  const wexIds = useMemo(() => exercises.map((e) => e.id), [exercises]);
-
-  useEffect(() => {
-    (async () => {
-      const { data } = await supabase
-        .from("workouts")
-        .select("*, groups(name), workout_exercises(*)")
-        .eq("id", id)
-        .single();
-      setWorkout(data as FullWorkout | null);
-      if (!data) return;
-      const { data: m } = await supabase
-        .from("group_members")
-        .select("*, profiles(*)")
-        .eq("group_id", data.group_id)
-        .order("joined_at");
-      setMembers((m as GroupMember[]) ?? []);
-    })();
-  }, [id]);
+  const patchLogs = useCallback((fn: (logs: SetLog[]) => SetLog[]) => {
+    setLogsState((s) => ({ ...s, logs: fn(s.logs ?? []) }));
+  }, []);
 
   useEffect(() => {
-    supabase
-      .from("comments")
-      .select("*, profiles(display_name)")
-      .eq("workout_id", id)
-      .order("created_at")
-      .then(({ data }) => setComments((data as CommentWithAuthor[]) ?? []));
-  }, [id, commentsVersion]);
-
-  useEffect(() => {
-    if (wexIds.length === 0) return;
-    supabase
-      .from("set_logs")
-      .select("*")
-      .in("workout_exercise_id", wexIds)
-      .then(({ data }) => setLogs(data ?? []));
-  }, [wexIds, logsVersion]);
-
-  // Vorige prestaties van de geselecteerde persoon voor dezelfde oefeningen.
-  useEffect(() => {
-    if (!workout || !forUser || exercises.length === 0) return;
-    const slugs = [...new Set(exercises.map((e) => e.exercise_slug))];
-    supabase
-      .from("set_logs")
-      .select("*, workout_exercises!inner(exercise_slug, workout_id, workouts!inner(date))")
-      .eq("user_id", forUser)
-      .in("workout_exercises.exercise_slug", slugs)
-      .neq("workout_exercises.workout_id", workout.id)
-      .lte("workout_exercises.workouts.date", workout.date)
-      .order("created_at", { ascending: false })
-      .limit(300)
-      .then(({ data }) => {
-        const bySlug: Record<string, PrevLog[]> = {};
-        for (const log of (data as PrevLog[]) ?? []) {
-          const slug = log.workout_exercises.exercise_slug;
-          const list = (bySlug[slug] ??= []);
-          // Alleen de meest recente sessie per oefening bewaren.
-          if (list.length && list[0].workout_exercise_id !== log.workout_exercise_id) continue;
-          list.push(log);
-        }
-        for (const list of Object.values(bySlug)) list.sort((a, b) => a.set_number - b.set_number);
-        setPrev(bySlug);
+    let stale = false;
+    const hitsBefore = staleResponseCount();
+    fetchLogs(id)
+      .then((data) => {
+        if (stale) return;
+        // Offline kopie van de service worker: alleen gebruiken als er nog niets op dit toestel staat.
+        const offlineCopy = staleResponseCount() !== hitsBefore;
+        setLogsError(offlineCopy);
+        if (offlineCopy && logsRef.current?.length) return;
+        // Wat dit toestel zelf heeft opgeslagen of gewist, blijft staan tot de server het bevestigt
+        // (een verouderd antwoord, of een herlaadactie die vóór een opslag begon en pas daarna terugkomt).
+        const merged = writesFor(id).reconcile(data);
+        setLogsState((s) => (s.id === id ? { id, logs: merged } : s));
+      })
+      .catch(() => {
+        if (!stale) setLogsError(true);
       });
-  }, [workout, forUser, exercises]);
+    return () => {
+      stale = true;
+    };
+  }, [id, logsVersion]);
 
-  // Alle eerdere sets per oefening (voor promotie- en recordmeldingen).
-  const [allLogs, setAllLogs] = useState<Map<string, LogLike[]> | null>(null);
-  const [celebration, setCelebration] = useState<CelebrationData | null>(null);
-  const slugKey = [...new Set(exercises.map((e) => e.exercise_slug))].join();
   useEffect(() => {
-    if (!forUser || !slugKey) return;
-    fetchLogsBySlug(forUser, slugKey.split(",")).then(setAllLogs);
-  }, [forUser, slugKey]);
+    if (serverLogs) setCached(logsKey(id), serverLogs, true);
+  }, [id, serverLogs]);
 
-  const onLogged = useCallback(
-    (slug: string, weight: number | null, reps: number | null) => {
-      // Home, Ranks en Progressie halen de nieuwe set bij het volgende bezoek op.
-      invalidateHistory(forUser);
-      invalidate("leaderboard:");
-      if (!allLogs) return;
-      const member = members.find((m) => m.user_id === forUser);
-      const bw = member?.profiles?.bodyweight_kg ?? null;
-      const sex = member?.profiles?.sex ?? null;
-      const age = ageFrom(member?.profiles?.birth_date);
-      const before = allLogs.get(slug) ?? [];
-      const after = [...before, { weight, reps }];
-      setAllLogs(new Map(allLogs).set(slug, after));
+  const exercises = useMemo(() => [...(workout?.workout_exercises ?? [])].sort((a, b) => a.position - b.position), [workout]);
+  const wexKey = exercises.map((e) => e.id).join(",");
+  const wexSet = useMemo(() => new Set(wexKey ? wexKey.split(",") : []), [wexKey]);
+  const queue = useQueue();
+  const failedOps = useFailed();
+  // Offline ingevulde sets staan erbij (gemarkeerd als "wacht op verbinding"), en sets die
+  // definitief niet konden worden opgeslagen als "niet opgeslagen".
+  const logs = useMemo(() => {
+    const base = serverLogs ?? (logsError ? NO_LOGS : undefined);
+    return base ? mergeFailed(mergeQueue(base, queue, wexSet), failedOps, wexSet) : undefined;
+  }, [serverLogs, logsError, queue, failedOps, wexSet]);
+  const allLogs = logs ?? NO_LOGS;
+  const logsMap = useMemo(() => new Map(allLogs.map((l) => [keyOfLog(l), l])), [allLogs]);
+  const logsRef = useRef(logs);
+  useEffect(() => {
+    logsRef.current = logs;
+  });
 
-      const r0 = rankExercise(slug, before, bw, sex, age);
-      const r1 = rankExercise(slug, after, bw, sex, age);
-      if (!r1) return;
-      const exercise = EXERCISE_BY_SLUG[slug]?.name ?? slug;
-      const who = forUser !== userId ? member?.profiles?.display_name : undefined;
-      const detail =
-        r1.unit === "reps"
-          ? `${r1.value} reps`
-          : r1.viaAdded
-            ? `+${r1.value.toLocaleString("nl-NL")} kg extra (1RM)`
-            : `1RM ≈ ${r1.value.toLocaleString("nl-NL")} kg`;
-      const base = { groupId: workout!.group_id, userId: forUser, workoutId: workout!.id };
-      if (!r0 || r1.tierIndex > r0.tierIndex) {
-        setCelebration({ kind: "promotion", tierIndex: r1.tierIndex, exercise, who });
-        // De allereerste rang telt alleen als promotie vanaf Zilver (anders is elke eerste set een melding).
-        if (r0 || r1.tierIndex >= 1) postActivity({ ...base, type: "promotion", payload: { slug, tierIndex: r1.tierIndex } });
-      } else if (r1.value > r0.value) {
-        setCelebration({ kind: "record", exercise, detail, who });
-        postActivity({ ...base, type: "pr", payload: { slug, detail } });
+  // ─── Wie, en wat mag je ───
+  const me = members.find((m) => m.user_id === userId);
+  const isMember = !!me;
+  const isTrainer = me?.role === "trainer";
+  const [selectedUser, setSelectedUser] = useState<string | null>(linkedPerson);
+  const [groupMode, setGroupMode] = useState(false);
+  // Nieuwe link naar dezelfde training (bijv. een andere chip op Home): die persoon tonen.
+  const [seenLink, setSeenLink] = useState(linkedPerson);
+  if (linkedPerson && linkedPerson !== seenLink) {
+    setSeenLink(linkedPerson);
+    setSelectedUser(linkedPerson);
+    setGroupMode(false);
+  }
+  // Parameter uit de adresbalk halen, zodat terugkomen of herladen niet opnieuw die persoon kiest.
+  useEffect(() => {
+    if (linkedPerson) router.replace(`/workouts/${id}`, { scroll: false });
+  }, [linkedPerson, id, router]);
+  const forUser =
+    selectedUser && members.some((m) => m.user_id === selectedUser) ? selectedUser : isMember ? userId : (members[0]?.user_id ?? userId);
+  const showGroup = groupMode && isTrainer && members.length > 1;
+  const canEdit = (uid: string) => isMember && (uid === userId || isTrainer);
+  const nameOf = useCallback((uid: string) => members.find((m) => m.user_id === uid)?.profiles?.display_name ?? "Onbekend", [members]);
+
+  // Wisselen van persoon: dezelfde oefening blijft in beeld (handig als je om de beurt traint).
+  const anchor = useRef<{ id: string; top: number } | null>(null);
+  function rememberAnchor() {
+    const offset = 150;
+    for (const el of document.querySelectorAll<HTMLElement>("[data-exercise-card]")) {
+      const r = el.getBoundingClientRect();
+      if (r.bottom > offset) {
+        anchor.current = { id: el.id, top: r.top };
+        return;
       }
-    },
-    [allLogs, members, forUser, userId, workout],
-  );
+    }
+    anchor.current = null;
+  }
+  function switchPerson(uid: string | null) {
+    rememberAnchor();
+    if (uid) setSelectedUser(uid);
+    setGroupMode(uid === null);
+  }
+  useLayoutEffect(() => {
+    const a = anchor.current;
+    anchor.current = null;
+    document.querySelector('[data-person-chip][aria-pressed="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    if (!a) return;
+    const el = document.getElementById(a.id);
+    if (el) window.scrollBy(0, el.getBoundingClientRect().top - a.top);
+  }, [forUser, showGroup]);
+
+  // ─── Eerdere trainingen (vorige keer, advies, records) ───
+  const slugs = useMemo(() => exercises.map((e) => e.exercise_slug), [exercises]);
+  const memberIds = members.map((m) => m.user_id).join(",");
+  const histUids = useMemo(() => (showGroup ? memberIds.split(",") : [forUser]), [showGroup, memberIds, forUser]);
+  const histories = useHistories(id, workout ? histUids : [], slugs);
+  const derived = useMemo(() => {
+    const out: Record<string, { prev: Record<string, PrevSession>; before: Map<string, LogLike[]> }> = {};
+    for (const [uid, rows] of Object.entries(histories)) {
+      if (rows) out[uid] = { prev: prevSessions(rows, workout?.date ?? "9999-12-31"), before: logsBySlug(rows) };
+    }
+    return out;
+  }, [histories, workout?.date]);
+
+  // ─── Meldingen ───
+  // Gewone meldingen (fouten, ongedaan maken) via het centrale meldingensysteem; controlevragen bij
+  // een onwaarschijnlijke sprong in een eigen balk bovenin, zodat een andere melding ze nooit wegdrukt.
+  const [celebration, setCelebration] = useState<CelebrationData | null>(null);
   const closeCelebration = useCallback(() => setCelebration(null), []);
+  const showError = useCallback((message: string) => {
+    toast.error(message);
+  }, []);
+  const [checks, setChecks] = useState<Check[]>([]);
+  const checkSeq = useRef(0);
+  const closeCheck = useCallback((cid: number) => setChecks((q) => q.filter((c) => c.id !== cid)), []);
+  const [finishOpen, setFinishOpen] = useState(false);
+  /** Records die wachten tot de geschiedenis van die persoon binnen is. */
+  const pendingAnnouncements = useRef<PendingAnnouncement[]>([]);
+  /** Records in de feed die opnieuw moeten worden nagekeken zodra offline bewerkingen zijn verstuurd. */
+  const feedDirty = useRef(new Map<string, { slug: string; uid: string }>());
 
-  // Na het versturen van offline ingevulde sets opnieuw laden.
-  useEffect(() => {
-    window.addEventListener(SYNCED_EVENT, reloadLogs);
-    return () => window.removeEventListener(SYNCED_EVENT, reloadLogs);
-  }, [reloadLogs]);
+  /** Groepspagina (aanwezigheid) en ranglijst tonen meteen de nieuwe stand. */
+  function afterChange(uid: string) {
+    invalidateHistory(uid, workout ? { workoutDate: workout.date } : undefined);
+    invalidate("leaderboard:");
+    if (workout) invalidate(`group:${workout.group_id}`);
+  }
 
-  // Live updates van vrienden.
+  /** Alle eerdere sets van iemand voor deze oefening: andere trainingen plus de rest van vandaag. */
+  function beforeFor(we: WorkoutExercise, uid: string, exclude: Set<string>): LogLike[] | null {
+    const hist = derived[uid];
+    if (!hist) return null;
+    const sameSlug = new Set(exercises.filter((e) => e.exercise_slug === we.exercise_slug).map((e) => e.id));
+    const today = allLogs
+      .filter((l) => l.user_id === uid && sameSlug.has(l.workout_exercise_id) && isDone(l) && !exclude.has(keyOfLog(l)))
+      .map((l) => ({ weight: l.weight, reps: l.reps }));
+    return [...(hist.before.get(we.exercise_slug) ?? []), ...today];
+  }
+
+  /** Naar een set springen (bijv. om een typfout te verbeteren), zo nodig eerst naar die persoon. */
+  function focusSet(we: WorkoutExercise, uid: string, n: number, { focus = true }: { focus?: boolean } = {}) {
+    if (!showGroup && uid !== forUser) switchPerson(uid);
+    window.setTimeout(() => {
+      const el = document.getElementById(setAnchorId(we.id, uid, n)) ?? document.getElementById(`exercise-${we.id}`);
+      if (!el) return;
+      const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      el.scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" });
+      if (!focus) return;
+      const input = el.querySelector<HTMLInputElement>("input[data-set-input]");
+      input?.focus({ preventScroll: true });
+      input?.select();
+    }, 80);
+  }
+
+  /** Eerste set die nog open staat voor iemand bij deze oefening (voor het groepsoverzicht). */
+  function firstOpenSet(we: WorkoutExercise, uid: string): number {
+    const done = new Set(allLogs.filter((l) => l.workout_exercise_id === we.id && l.user_id === uid && isDone(l)).map((l) => l.set_number));
+    for (let n = 1; n <= we.target_sets; n++) if (!done.has(n)) return n;
+    return Math.max(1, we.target_sets);
+  }
+
+  /** Staat deze set nog precies zo (niet intussen aangepast of gewist)? */
+  function stillIs(k: string, value: LogLike) {
+    const cur = logsRef.current?.find((l) => keyOfLog(l) === k);
+    return !!cur && isDone(cur) && cur.weight === value.weight && cur.reps === value.reps;
+  }
+
+  /**
+   * Promotie of record vieren en in de groepsfeed zetten (na een controlevraag bij een
+   * onwaarschijnlijke sprong). Offline behaald: de feed volgt zodra de set is verstuurd.
+   * Is de geschiedenis van die persoon nog niet geladen (net gewisseld, of offline), dan wacht
+   * de controle tot die binnen is.
+   */
+  function announce(we: WorkoutExercise, uid: string, n: number, value: LogLike, before: LogLike[] | null, queued = false) {
+    if (!workout) return;
+    const k = setKey(we.id, uid, n);
+    if (!before) {
+      pendingAnnouncements.current = [...pendingAnnouncements.current.filter((p) => setKey(p.we.id, p.uid, p.n) !== k), { we, uid, n, value }];
+      return;
+    }
+    const member = members.find((m) => m.user_id === uid);
+    const slug = we.exercise_slug;
+    const a = detectAchievement(slug, before, value, memberProfile(member, ageFrom));
+    if (!a) return;
+    const exercise = EXERCISE_BY_SLUG[slug]?.name ?? slug;
+    const who = uid !== userId ? member?.profiles?.display_name : undefined;
+    const base = { groupId: workout.group_id, userId: uid, workoutId: workout.id };
+    const set = { workout_exercise_id: we.id, user_id: uid, set_number: n };
+    const post = (activity: Parameters<typeof postActivity>[0]) => {
+      if (queued) enqueueActivity({ set, value: { weight: value.weight, reps: value.reps }, activity, by: userId });
+      else postActivity(activity);
+    };
+    const fire = () => {
+      if (a.kind === "promotion") {
+        setCelebration({ kind: "promotion", tierIndex: a.tierIndex, exercise, who });
+        if (a.post) post({ ...base, type: "promotion", payload: { slug, tierIndex: a.tierIndex } });
+      } else {
+        setCelebration({ kind: "record", exercise, detail: a.detail, who });
+        post({ ...base, type: "pr", payload: { slug, detail: a.detail } });
+      }
+    };
+    if (!a.suspicious) return fire();
+    checkSeq.current += 1;
+    const check: Check = {
+      id: checkSeq.current,
+      key: k,
+      set: `${fmtSet(value)} bij ${exercise}${who ? ` (${who})` : ""}`,
+      // Alleen vieren als de set intussen niet is aangepast.
+      onConfirm: () => {
+        if (stillIs(k, value)) fire();
+      },
+      onFix: () => focusSet(we, uid, n),
+    };
+    // Een nieuwe vraag over dezelfde set vervangt de oude.
+    setChecks((q) => [...q.filter((c) => c.key !== k), check].slice(-5));
+  }
+
+  /** Records die wachtten op de geschiedenis: alsnog bepalen, één melding per persoon en oefening. */
+  const replayAnnouncements = useEffectEvent(() => {
+    const ready = pendingAnnouncements.current.filter((p) => derived[p.uid]);
+    if (!ready.length) return;
+    pendingAnnouncements.current = pendingAnnouncements.current.filter((p) => !derived[p.uid]);
+    const groups = new Map<string, PendingAnnouncement[]>();
+    for (const p of ready) {
+      const g = `${p.uid}|${p.we.exercise_slug}`;
+      groups.set(g, [...(groups.get(g) ?? []), p]);
+    }
+    for (const items of groups.values()) {
+      const still = items.filter((p) => stillIs(setKey(p.we.id, p.uid, p.n), p.value));
+      if (!still.length) continue;
+      const best = bestOf(still.map((p) => p.value))?.set;
+      const pick = still.find((p) => p.value === best) ?? still[0];
+      const exclude = new Set(still.map((p) => setKey(p.we.id, p.uid, p.n)));
+      const pk = setKey(pick.we.id, pick.uid, pick.n);
+      const queued = !!logsRef.current?.find((l) => keyOfLog(l) === pk)?.pending;
+      announce(pick.we, pick.uid, pick.n, pick.value, beforeFor(pick.we, pick.uid, exclude), queued);
+    }
+  });
   useEffect(() => {
+    replayAnnouncements();
+  }, [derived]);
+
+  /** Record of promotie in de feed bijwerken of intrekken nadat een set is gewist of verlaagd. */
+  const feedTimers = useRef(new Map<string, number>());
+  function scheduleFeedSync(slug: string, uid: string) {
+    if (!workout || !derived[uid]) return;
+    const key = `${uid}|${slug}`;
+    window.clearTimeout(feedTimers.current.get(key));
+    const hist = derived[uid].before.get(slug) ?? [];
+    const profile = memberProfile(
+      members.find((m) => m.user_id === uid),
+      ageFrom,
+    );
+    const ids = new Set(exercises.filter((e) => e.exercise_slug === slug).map((e) => e.id));
+    const workoutId = workout.id;
+    feedTimers.current.set(
+      key,
+      window.setTimeout(() => {
+        feedTimers.current.delete(key);
+        const today = (logsRef.current ?? []).filter((l) => l.user_id === uid && ids.has(l.workout_exercise_id) && isDone(l));
+        const best = bestOf(today)?.set;
+        const a = best ? detectAchievement(slug, hist, best, profile) : null;
+        // Een onbevestigde, onwaarschijnlijke sprong zet niets in de feed.
+        if (a?.suspicious) return;
+        syncFeedAfterChange({ workoutId, userId: uid, slug, prDetail: a?.detail ?? null, tierIndex: a?.kind === "promotion" ? a.tierIndex : null });
+      }, 1500),
+    );
+  }
+
+  /** Offline gewist of verlaagd: de feed pas bijwerken als de bewerking echt is verstuurd. */
+  function markFeedDirty(slug: string, uid: string) {
+    feedDirty.current.set(`${uid}|${slug}`, { slug, uid });
+  }
+
+  /** Netwerk- of sessieprobleem: in de wachtrij, en bij een verlopen sessie meteen verversen. */
+  function queueOp(op: Parameters<typeof enqueue>[0], error: unknown) {
+    enqueue({ ...op, by: userId });
+    if (isAuthError(error)) {
+      supabase.auth
+        .refreshSession()
+        .then(() => flushQueue())
+        .catch(() => {});
+    }
+  }
+
+  // ─── Opslaan en wissen ───
+  // Alle schrijfacties voor één set lopen via withSetLock (gedeeld met het versturen van de
+  // wachtrij) en hebben een time-out: een hangend verzoek op haperende wifi gaat zo in de wachtrij.
+  async function saveSet(
+    we: WorkoutExercise,
+    uid: string,
+    n: number,
+    wStr: string,
+    rStr: string,
+    opts: { silent?: boolean; force?: boolean } = {},
+  ): Promise<SaveResult> {
+    if (!canEdit(uid)) return "skipped";
+    const w = parseWeight(wStr);
+    const r = parseReps(rStr);
+    const k = setKey(we.id, uid, n);
+    const existing = logsMap.get(k);
+    const retry = !!existing?.failed;
+    const sig = `${w}|${r}`;
+    const inflight = pendingSaves.current.get(k);
+    // Dubbele opslag (verlaten van het veld + afvinken) of niets veranderd: niets doen.
+    if (inflight === sig && !retry) return "skipped";
+    if (!opts.force && !retry && inflight === undefined && (existing?.weight ?? null) === w && (existing?.reps ?? null) === r) return "skipped";
+    if (w === null && r === null) {
+      if (existing) deleteSet(we, uid, n, existing);
+      return "skipped";
+    }
+    const invalid = validateSet(w, r);
+    if (invalid) {
+      showError(invalid);
+      return "invalid";
+    }
+
+    const row = { workout_exercise_id: we.id, user_id: uid, set_number: n, weight: w, reps: r };
+    const keyObj = { workout_exercise_id: we.id, user_id: uid, set_number: n };
+    const before = opts.silent ? null : beforeFor(we, uid, new Set([k]));
+    // Een afgeronde set verlaagd: het record in de feed kan dan niet meer kloppen.
+    const lowered = isDone(existing) && !retry && !beats({ weight: w, reps: r }, bestOf([existing!]));
+    const previous = existing && !existing.failed ? existing : null;
+    pendingSaves.current.set(k, sig);
+    writesFor(id).record(k, previous, { weight: w, reps: r });
+    patchLogs((ls) => upsertLocal(ls, { ...row, id: existing?.id ?? `tmp:${k}`, created_at: existing?.created_at ?? new Date().toISOString() }));
+
+    const res = await withSetLock(k, async () => {
+      // Intussen al opnieuw aangepast: deze tussenversie hoeft niet meer verstuurd.
+      if (pendingSaves.current.get(k) !== sig) return null;
+      const out = await supabase.from("set_logs").upsert(row, { onConflict: ON_CONFLICT }).select().abortSignal(writeTimeout()).single();
+      // Nog binnen het slot: een oudere wachtende versie van deze set mag hierna niet meer worden verstuurd.
+      if (!out.error) dequeue(keyObj);
+      return out;
+    });
+    if (!res) return "skipped";
+    const { data, error, status } = res;
+    const latest = pendingSaves.current.get(k) === sig;
+    if (latest) pendingSaves.current.delete(k);
+
+    if (error && isRetryableError({ ...error, status })) {
+      // Geen verbinding, time-out of sessie verlopen: bewaren en later versturen.
+      queueOp({ kind: "upsert", row }, { ...error, status });
+      if (retry) removeFailed(keyObj);
+      if (lowered) markFeedDirty(we.exercise_slug, uid);
+      navigator.vibrate?.(12);
+      if (latest && !opts.silent) announce(we, uid, n, { weight: w, reps: r }, before, true);
+      return "queued";
+    }
+    if (error) {
+      if (latest) {
+        writesFor(id).record(k, { weight: w, reps: r }, previous);
+        if (previous && !previous.pending) {
+          patchLogs((ls) => upsertLocal(ls, previous));
+        } else {
+          // Nieuwe of eerder mislukte set: zichtbaar houden als "niet opgeslagen", met opnieuw proberen.
+          patchLogs((ls) => ls.filter((l) => keyOfLog(l) !== k));
+          markFailed({ kind: "upsert", row, by: userId }, { ...error, status });
+        }
+      }
+      showError(`Set ${n} niet opgeslagen: ${errorMessage(error)}`);
+      return "error";
+    }
+    if (retry) removeFailed(keyObj);
+    // Verbinding is er weer: offline behaalde records alvast in de feed zetten.
+    if (readActivities().length) flushQueue();
+    if (latest && data) patchLogs((ls) => upsertLocal(ls, normalizeLog(data)));
+    navigator.vibrate?.(12);
+    afterChange(uid);
+    if (latest) {
+      if (!opts.silent) announce(we, uid, n, { weight: w, reps: r }, before);
+      if (lowered) scheduleFeedSync(we.exercise_slug, uid);
+    }
+    return "saved";
+  }
+
+  async function deleteSet(we: WorkoutExercise, uid: string, n: number, existing: LogRow, opts: { undo?: boolean } = { undo: true }) {
+    if (!canEdit(uid)) return;
+    const k = setKey(we.id, uid, n);
+    const key = { workout_exercise_id: we.id, user_id: uid, set_number: n };
+    const previous = existing.failed ? null : existing;
+    pendingSaves.current.set(k, "delete");
+    writesFor(id).record(k, previous, null);
+    patchLogs((ls) => ls.filter((l) => keyOfLog(l) !== k));
+    dequeue(key);
+    removeFailed(key);
+    pendingAnnouncements.current = pendingAnnouncements.current.filter((p) => setKey(p.we.id, p.uid, p.n) !== k);
+    if (opts.undo && !existing.failed) {
+      toast(`Set ${n} gewist`, {
+        action: {
+          label: "Ongedaan maken",
+          run: () =>
+            actions.current.saveSet(we, uid, n, fmtNum(existing.weight), existing.reps?.toString() ?? "", { silent: true, force: true }),
+        },
+      });
+    }
+    // Alleen lokaal mislukt (nooit in de database gekomen): niets te wissen.
+    if (existing.failed && existing.id.startsWith("failed:")) {
+      pendingSaves.current.delete(k);
+      return;
+    }
+    const res = await withSetLock(k, async () =>
+      pendingSaves.current.get(k) === "delete"
+        ? await supabase
+            .from("set_logs")
+            .delete()
+            .eq("workout_exercise_id", we.id)
+            .eq("user_id", uid)
+            .eq("set_number", n)
+            .abortSignal(writeTimeout())
+        : null,
+    );
+    if (!res) return;
+    const { error, status } = res;
+    if (pendingSaves.current.get(k) === "delete") pendingSaves.current.delete(k);
+    if (error && isRetryableError({ ...error, status })) {
+      queueOp({ kind: "delete", key }, { ...error, status });
+      if (isDone(existing)) markFeedDirty(we.exercise_slug, uid);
+      return;
+    }
+    if (error) {
+      writesFor(id).record(k, null, previous);
+      if (previous) patchLogs((ls) => (ls.some((l) => keyOfLog(l) === k) ? ls : upsertLocal(ls, previous)));
+      showError(`Wissen mislukt: ${errorMessage(error)}`);
+      return;
+    }
+    afterChange(uid);
+    if (isDone(existing)) scheduleFeedSync(we.exercise_slug, uid);
+  }
+
+  /** Afvinken ongedaan maken: de set telt niet meer, de getallen blijven in de velden staan. */
+  function uncompleteSet(we: WorkoutExercise, uid: string, n: number, log: LogRow) {
+    deleteSet(we, uid, n, log, { undo: false });
+  }
+
+  /** Open sets in één keer afronden met de voorinvulling (met ongedaan maken). */
+  async function fillSets(we: WorkoutExercise, uid: string, sets: FillSet[]) {
+    if (!sets.length || !canEdit(uid)) return;
+    const keys = new Set(sets.map((s) => setKey(we.id, uid, s.n)));
+    const before = beforeFor(we, uid, keys);
+    // Wat er voor het afronden stond (bijv. alleen een gewicht), om ongedaan maken precies terug te zetten.
+    const prior = new Map(sets.map((s) => [s.n, logsMap.get(setKey(we.id, uid, s.n))]));
+    const results = await Promise.all(sets.map((s) => saveSet(we, uid, s.n, fmtNum(s.weight), String(s.reps), { silent: true })));
+    const ok = sets.filter((_, i) => results[i] === "saved" || results[i] === "queued");
+    if (!ok.length) return;
+    // Eén melding voor de beste set, niet voor elke set apart (een eventuele controlevraag komt eerst).
+    const best = bestOf(ok.map((s) => ({ weight: s.weight, reps: s.reps })))?.set;
+    const bestSet = best && ok.find((s) => s.weight === best.weight && s.reps === best.reps);
+    if (bestSet) {
+      const queued = results[sets.indexOf(bestSet)] === "queued";
+      announce(we, uid, bestSet.n, { weight: bestSet.weight, reps: bestSet.reps }, before, queued);
+    }
+    toast(`${ok.length} ${ok.length === 1 ? "set" : "sets"} afgerond`, {
+      action: {
+        label: "Ongedaan maken",
+        run: () => {
+          const { saveSet: save, deleteSet: remove } = actions.current;
+          for (const s of ok) {
+            const was = prior.get(s.n);
+            if (was && !was.failed && !isDone(was) && was.weight != null) {
+              // Er stond al een gewicht (nog niet afgevinkt): dat gewicht terugzetten.
+              save(we, uid, s.n, fmtNum(was.weight), "", { silent: true, force: true });
+              continue;
+            }
+            const log: LogRow = {
+              id: `tmp:${setKey(we.id, uid, s.n)}`,
+              workout_exercise_id: we.id,
+              user_id: uid,
+              set_number: s.n,
+              weight: s.weight,
+              reps: s.reps,
+              created_at: new Date().toISOString(),
+            };
+            remove(we, uid, s.n, log, { undo: false });
+          }
+        },
+      },
+    });
+  }
+
+  /** Altijd de nieuwste versie van opslaan/wissen (voor knoppen in meldingen die later worden ingedrukt). */
+  const actions = useRef({ saveSet, deleteSet });
+  useEffect(() => {
+    actions.current = { saveSet, deleteSet };
+  });
+
+  // ─── Live updates, herverbinden en offline ───
+  const onRemoteRow = useEffectEvent((row: Record<string, unknown>) => {
+    if (!serverLogs) return;
+    const log = normalizeLog(row);
+    const k = keyOfLog(log);
+    if (!wexSet.has(log.workout_exercise_id) || pendingSaves.current.has(k)) return;
+    // Een late echo van een eigen, inmiddels achterhaalde opslag niet terugzetten.
+    if (!writesFor(id).remote(k, log)) return;
+    const prev = logsRef.current?.find((l) => keyOfLog(l) === k);
+    const changed = !prev || prev.weight !== log.weight || prev.reps !== log.reps;
+    patchLogs((ls) => upsertLocal(ls, log));
+    if (changed && log.user_id === userId && isDone(log)) celebrateOwn(log);
+  });
+
+  /**
+   * Je trainer heeft (op zijn telefoon) een set voor jou gelogd die een record of promotie is:
+   * dan zie je de viering ook op je eigen telefoon. De feed regelt het toestel van de trainer.
+   */
+  function celebrateOwn(log: SetLog) {
+    const we = exercises.find((e) => e.id === log.workout_exercise_id);
+    const trainers = members.filter((m) => m.role === "trainer" && m.user_id !== userId);
+    if (!we || !trainers.length) return;
+    const before = beforeFor(we, userId, new Set([keyOfLog(log)]));
+    if (!before) return;
+    const a = detectAchievement(we.exercise_slug, before, log, memberProfile(me, ageFrom));
+    // Een onwaarschijnlijke sprong vraagt de trainer om bevestiging; hier niet vieren.
+    if (!a || a.suspicious) return;
+    const exercise = EXERCISE_BY_SLUG[we.exercise_slug]?.name ?? we.exercise_slug;
+    const by = trainers.length === 1 ? (trainers[0].profiles?.display_name ?? "je trainer") : "je trainer";
+    setCelebration(
+      a.kind === "promotion" ? { kind: "promotion", tierIndex: a.tierIndex, exercise, by } : { kind: "record", exercise, detail: a.detail, by },
+    );
+  }
+  const onRemoteDelete = useEffectEvent((old: Record<string, unknown>) => {
+    const oid = old?.id;
+    if (!oid) return;
+    const cur = logsRef.current?.find((l) => l.id === oid);
+    if (!cur) return;
+    const k = keyOfLog(cur);
+    if (pendingSaves.current.has(k) || !writesFor(id).remote(k, null)) return;
+    patchLogs((ls) => ls.filter((l) => l.id !== oid));
+  });
+  const refreshAll = useEffectEvent(() => {
+    reloadLogs();
+    cm.retry();
+    if (wk.error || !bundle) wk.retry();
+  });
+  const refreshComments = useEffectEvent(() => cm.retry());
+  /** Na versturen van de wachtrij: definitief mislukte sets niet meer als "gedaan" vasthouden, en verversen. */
+  const onSynced = useEffectEvent(() => {
+    const w = writesFor(id);
+    for (const f of readFailed()) w.forget(keyOfLog(setOfOp(f.op)));
+    // Offline gewiste of verlaagde records: nu de feed bijwerken.
+    for (const { slug, uid } of feedDirty.current.values()) scheduleFeedSync(slug, uid);
+    feedDirty.current.clear();
+    reloadLogs();
+    if (workout) invalidate(`group:${workout.group_id}`);
+  });
+
+  useEffect(() => {
+    if (!wexKey) return;
+    let subscribedOnce = false;
+    const filter = `workout_exercise_id=in.(${wexKey})`;
     const channel = supabase
       .channel(`workout-${id}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "set_logs" }, reloadLogs)
-      .on("postgres_changes", { event: "*", schema: "public", table: "comments", filter: `workout_id=eq.${id}` }, reloadComments)
-      .subscribe();
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "set_logs", filter }, (p) => onRemoteRow(p.new as Record<string, unknown>))
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "set_logs", filter }, (p) => onRemoteRow(p.new as Record<string, unknown>))
+      // Verwijderingen zijn niet te filteren; we krijgen alleen het id en negeren onbekende sets.
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "set_logs" }, (p) => onRemoteDelete(p.old as Record<string, unknown>))
+      .on("postgres_changes", { event: "*", schema: "public", table: "comments", filter: `workout_id=eq.${id}` }, () => refreshComments())
+      .subscribe((status) => {
+        if (status !== "SUBSCRIBED") return;
+        // Na een herverbinding kunnen we updates gemist hebben.
+        if (subscribedOnce) refreshAll();
+        subscribedOnce = true;
+      });
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [id, reloadLogs, reloadComments]);
+  }, [id, wexKey]);
 
-  const isTrainer = members.some((m) => m.user_id === userId && m.role === "trainer");
-  const nameOf = (uid: string) => members.find((m) => m.user_id === uid)?.profiles?.display_name ?? "Onbekend";
+  useEffect(() => {
+    // Invoer bewaren als de telefoon op slot gaat of je van app wisselt terwijl je nog in een veld zit.
+    const flushInput = () => {
+      const el = document.activeElement;
+      if (el instanceof HTMLInputElement && el.dataset.setInput !== undefined) el.blur();
+    };
+    let hiddenAt = 0;
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        hiddenAt = Date.now();
+        flushInput();
+      } else if (hiddenAt && Date.now() - hiddenAt > 15_000) {
+        refreshAll();
+      }
+    };
+    const onOnline = () => refreshAll();
+    const synced = () => onSynced();
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", flushInput);
+    window.addEventListener("online", onOnline);
+    window.addEventListener(SYNCED_EVENT, synced);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", flushInput);
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener(SYNCED_EVENT, synced);
+    };
+  }, []);
 
-  if (workout === undefined) {
+  useEffect(() => {
+    const timers = feedTimers.current;
+    return () => {
+      for (const t of timers.values()) window.clearTimeout(t);
+    };
+  }, []);
+
+  // ─── Weergave ───
+  if (bundle === undefined) {
     return (
       <AppShell title="Training" back>
-        <div className="space-y-3"><div className="skeleton h-24" /><div className="skeleton h-40" /></div>
+        {wk.error ? (
+          <div className="card space-y-3">
+            <p className="font-semibold">Training kon niet worden geladen</p>
+            <p className="text-sm text-muted">
+              {typeof navigator !== "undefined" && !navigator.onLine
+                ? "Je bent offline en deze training staat nog niet op dit toestel. Probeer het opnieuw zodra je verbinding hebt."
+                : "Controleer je verbinding en probeer het opnieuw."}
+            </p>
+            <button className="btn-primary w-full" onClick={wk.retry}>
+              Opnieuw proberen
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-4" aria-busy="true" aria-label="Training laden">
+            <div className="skeleton h-4 w-2/3" />
+            <div className="flex gap-2">
+              <div className="skeleton h-14 w-24" />
+              <div className="skeleton h-14 w-24" />
+              <div className="skeleton h-14 w-24" />
+            </div>
+            <div className="skeleton h-64" />
+            <div className="skeleton h-48" />
+          </div>
+        )}
       </AppShell>
     );
   }
-  if (workout === null) {
+  if (bundle === null || !workout) {
     return (
       <AppShell title="Training" back="/">
-        <div className="card text-sm text-muted">Training niet gevonden.</div>
+        <div className="card space-y-3">
+          <p className="font-semibold">Training niet gevonden</p>
+          <p className="text-sm text-muted">Deze training bestaat niet meer, of je hebt er geen toegang toe.</p>
+          <Link href="/" className="btn-ghost w-full">
+            Naar home
+          </Link>
+        </div>
       </AppShell>
     );
   }
 
-  const totalTarget = exercises.reduce((s, e) => s + e.target_sets, 0);
-  const doneByUser = (uid: string) => logs.filter((l) => l.user_id === uid && (l.reps ?? 0) > 0).length;
+  const loadingLogs = logs === undefined;
+  const plannedFor = (uid: string) => plannedSets(exercises, allLogs, uid);
+  const myDone = doneSets(allLogs, forUser);
+  const myPlanned = plannedFor(forUser);
+  const allDone = myPlanned > 0 && myDone >= myPlanned;
+  const bestFor = (uid: string, slug: string) => (derived[uid] ? bestOf(derived[uid].before.get(slug) ?? []) : null);
+  const personView = (uid: string, slug: string, name?: string): PersonView => ({
+    uid,
+    name,
+    prev: derived[uid]?.prev[slug],
+    best: bestFor(uid, slug),
+    readOnly: !canEdit(uid),
+  });
+  const logsByWex = new Map<string, LogRow[]>();
+  for (const l of allLogs) {
+    const list = logsByWex.get(l.workout_exercise_id);
+    if (list) list.push(l);
+    else logsByWex.set(l.workout_exercise_id, [l]);
+  }
+  const switcher = isTrainer && members.length > 1;
+  const nextPerson = switcher && !showGroup ? members[(members.findIndex((m) => m.user_id === forUser) + 1) % members.length] : undefined;
+  const failedHere = allLogs.filter((l) => l.failed).length;
 
   return (
     <AppShell
@@ -211,460 +824,225 @@ export default function WorkoutPage() {
       }
     >
       <div className="space-y-5">
-        <div className="space-y-1">
-          <p className="text-sm text-muted">
-            {formatDate(workout.date)} · {workout.groups?.name}
-          </p>
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+            <p className="text-sm text-muted">
+              {formatDate(workout.date)}
+              {workout.groups?.name ? ` · ${workout.groups.name}` : ""}
+            </p>
+            {isTrainer && (
+              <Link
+                href={`/groups/${workout.group_id}/plan?from=${workout.id}`}
+                className="-my-2 inline-flex min-h-10 items-center gap-1.5 text-xs font-medium text-muted transition hover:text-ink"
+              >
+                <CalendarIcon size={14} className="text-accent" /> Opnieuw plannen
+              </Link>
+            )}
+          </div>
           {workout.notes && <p className="whitespace-pre-wrap rounded-xl bg-surface-2 p-3 text-sm">{workout.notes}</p>}
         </div>
 
-        <Link
-          href={`/coach?q=${encodeURIComponent(`Kijk de training "${workout.title}" van ${workout.date} na (workout ${workout.id}). Hoe ging het en wat moet ik volgende keer anders doen?`)}`}
-          className="btn-ghost w-full"
-        >
-          <SparkleIcon className="text-accent" /> Laat de coach deze training nakijken
-        </Link>
-
-        {/* Voortgang per persoon */}
-        <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
-          {members.map((m) => {
-            const done = doneByUser(m.user_id);
-            const selectable = isTrainer || m.user_id === userId;
-            const active = m.user_id === forUser;
-            return (
-              <button
-                key={m.user_id}
-                disabled={!selectable}
-                onClick={() => setSelectedUser(m.user_id)}
-                className={`shrink-0 rounded-xl border px-3 py-2 text-left ${active ? "border-accent bg-accent/10" : "border-line"} ${selectable ? "" : "cursor-default"}`}
+        {/* Voortgang per persoon; blijft bovenin staan zodat je overal kunt wisselen */}
+        {(members.length > 0 || checks.length > 0) && (
+          <div className={`sticky ${STICKY_TOP} z-10 -mx-4 bg-bg/90 px-4 py-2 backdrop-blur`}>
+            <div className="flex items-stretch gap-2">
+              <div
+                className="-ml-4 flex min-w-0 flex-1 gap-2 overflow-x-auto pl-4 [scrollbar-width:none]"
+                role="group"
+                aria-label="Kies voor wie je sets bekijkt of invult"
               >
-                <p className={`text-sm font-semibold ${active ? "text-accent" : ""}`}>
-                  {m.user_id === userId ? "Jij" : m.profiles?.display_name}
-                </p>
-                <p className="text-xs text-muted">
-                  {done}/{totalTarget} sets
-                </p>
-              </button>
-            );
-          })}
-        </div>
-        {isTrainer && forUser !== userId && (
+                {switcher && (
+                  <button
+                    data-person-chip
+                    onClick={() => switchPerson(null)}
+                    aria-pressed={showGroup}
+                    className={`flex shrink-0 flex-col justify-center rounded-xl border px-3 py-1.5 text-left transition active:scale-[0.97] ${
+                      showGroup ? "border-accent bg-accent/10" : "border-line bg-bg hover:border-muted"
+                    }`}
+                  >
+                    <span className={`inline-flex items-center gap-1.5 text-sm font-semibold ${showGroup ? "text-accent" : ""}`}>
+                      <UsersIcon size={15} /> Iedereen
+                    </span>
+                    <span className="text-xs text-muted">Groepsmodus</span>
+                  </button>
+                )}
+                {members.map((m) => {
+                  const done = doneSets(allLogs, m.user_id);
+                  const planned = plannedFor(m.user_id);
+                  const active = !showGroup && m.user_id === forUser;
+                  const pct = planned ? Math.min(100, (done / planned) * 100) : 0;
+                  return (
+                    <button
+                      key={m.user_id}
+                      data-person-chip
+                      onClick={() => switchPerson(m.user_id)}
+                      aria-pressed={active}
+                      className={`min-w-24 shrink-0 rounded-xl border px-3 py-1.5 text-left transition active:scale-[0.97] ${
+                        active ? "border-accent bg-accent/10" : "border-line bg-bg hover:border-muted"
+                      }`}
+                    >
+                      <span className={`flex items-center gap-1 text-sm font-semibold ${active ? "text-accent" : ""}`}>
+                        <span className="max-w-28 truncate">{m.user_id === userId ? "Jij" : (m.profiles?.display_name ?? "Onbekend")}</span>
+                        {planned > 0 && done >= planned && <CheckIcon size={13} strokeWidth={3} className="text-accent" />}
+                      </span>
+                      <span className="block text-xs tabular-nums text-muted">{loadingLogs ? "…" : `${done}/${planned} sets`}</span>
+                      <span className="mt-1 block h-1 overflow-hidden rounded-full bg-surface-2" aria-hidden>
+                        <span className="block h-full rounded-full bg-accent transition-[width] duration-500" style={{ width: `${pct}%` }} />
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              {nextPerson && (
+                <button
+                  onClick={() => switchPerson(nextPerson.user_id)}
+                  className="flex w-14 shrink-0 flex-col items-center justify-center rounded-xl border border-line bg-surface-2 text-xs font-medium text-muted transition hover:text-ink active:scale-[0.97]"
+                  aria-label={`Volgende persoon: ${nextPerson.user_id === userId ? "jij" : nameOf(nextPerson.user_id)}`}
+                  title="Volgende persoon, zelfde oefening"
+                >
+                  <ChevronRightIcon size={18} className="text-accent" />
+                  Volgende
+                </button>
+              )}
+            </div>
+            <JumpCheck items={checks} onDone={closeCheck} />
+          </div>
+        )}
+
+        {showGroup ? (
+          <div className="space-y-3">
+            <p className="rounded-xl border border-accent/30 bg-accent/5 px-3 py-2 text-sm">
+              Groepsmodus: per oefening vul je de sets van iedereen in, zonder te wisselen.
+            </p>
+            <GroupGrid
+              exercises={exercises}
+              members={members}
+              logs={allLogs}
+              userId={userId}
+              loading={loadingLogs}
+              onJump={(we, uid) => focusSet(we, uid, firstOpenSet(we, uid), { focus: false })}
+            />
+          </div>
+        ) : !isMember ? (
+          <p className="rounded-xl border border-line bg-surface-2 px-3 py-2 text-sm text-muted">
+            Je bekijkt deze training als vriend. Alleen groepsleden kunnen sets invullen.
+          </p>
+        ) : forUser !== userId && isTrainer ? (
           <p className="rounded-xl border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn">
             Je vult nu sets in voor <strong>{nameOf(forUser)}</strong>.
           </p>
+        ) : forUser !== userId ? (
+          <p className="rounded-xl border border-line bg-surface-2 px-3 py-2 text-sm text-muted">
+            Je bekijkt de sets van <strong className="text-ink">{nameOf(forUser)}</strong>.
+          </p>
+        ) : null}
+
+        {logsError && (
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-line bg-surface-2 px-3 py-2 text-sm" role="status">
+            <span className="text-muted">
+              {serverLogs ? "Geen verbinding: je ziet de laatst bekende sets. Wat je invult wordt bewaard." : "Sets konden niet worden geladen. Wat je invult wordt bewaard."}
+            </span>
+            <button className="min-h-10 shrink-0 font-semibold text-accent" onClick={reloadLogs}>
+              Opnieuw
+            </button>
+          </div>
         )}
 
-        <ol className="space-y-4">
-          {exercises.map((we, i) => (
-            <ExerciseCard
-              key={we.id}
-              index={i}
-              we={we}
-              forUser={forUser}
-              logs={logs.filter((l) => l.workout_exercise_id === we.id)}
-              prev={prev[we.exercise_slug] ?? []}
-              comments={comments.filter((c) => c.workout_exercise_id === we.id)}
-              nameOf={nameOf}
-              userId={userId}
-              isTrainer={isTrainer}
-              onChange={reloadLogs}
-              onComment={reloadComments}
-              onLogged={(w, r) => onLogged(we.exercise_slug, w, r)}
-            />
-          ))}
-        </ol>
+        {failedHere > 0 && (
+          <p className="rounded-xl border border-danger/40 bg-danger/5 px-3 py-2 text-sm text-danger" role="alert">
+            {failedHere === 1 ? "Eén set kon" : `${failedHere} sets konden`} niet worden opgeslagen. Tik op het pijltje bij de set om het opnieuw te
+            proberen.
+          </p>
+        )}
+
+        {exercises.length === 0 ? (
+          <div className="card space-y-3 text-center">
+            <p className="font-semibold">Nog geen oefeningen</p>
+            <p className="text-sm text-muted">
+              {isTrainer ? "Voeg oefeningen toe om deze training te kunnen loggen." : "De trainer heeft nog geen oefeningen aan deze training toegevoegd."}
+            </p>
+            {isTrainer && (
+              <Link href={`/groups/${workout.group_id}/plan?edit=${workout.id}`} className="btn-primary w-full">
+                Oefeningen toevoegen
+              </Link>
+            )}
+          </div>
+        ) : (
+          <ol className="space-y-4">
+            {exercises.map((we, i) => (
+              <ExerciseCard
+                key={we.id}
+                index={i}
+                we={we}
+                people={
+                  showGroup
+                    ? members.map((m) => personView(m.user_id, we.exercise_slug, m.user_id === userId ? "Jij" : (m.profiles?.display_name ?? "Onbekend")))
+                    : [personView(forUser, we.exercise_slug)]
+                }
+                logs={logsByWex.get(we.id) ?? NO_LOGS}
+                comments={comments.filter((c) => c.workout_exercise_id === we.id)}
+                nameOf={nameOf}
+                userId={userId}
+                isTrainer={isTrainer}
+                canComment={isMember}
+                groupMode={showGroup}
+                loading={loadingLogs}
+                onSave={saveSet}
+                onDelete={(w, uid, n, log) => deleteSet(w, uid, n, log)}
+                onUncomplete={uncompleteSet}
+                onFill={fillSets}
+                onCommentsChange={cm.retry}
+                onError={showError}
+              />
+            ))}
+          </ol>
+        )}
+
+        {exercises.length > 0 && (
+          <button
+            className={`${allDone ? "btn-primary" : "btn-ghost"} w-full py-3 text-base`}
+            onClick={() => setFinishOpen(true)}
+            disabled={loadingLogs}
+          >
+            {allDone && <CheckIcon size={18} strokeWidth={2.6} />}
+            {allDone ? "Training afgerond, bekijk samenvatting" : `Training afronden (${myDone}/${myPlanned} sets)`}
+          </button>
+        )}
 
         <section className="card space-y-3">
           <h2 className="font-bold">Opmerkingen bij de training</h2>
+          {cm.error && comments.length === 0 && <p className="text-sm text-muted">Opmerkingen konden niet worden geladen.</p>}
           <CommentThread
             workoutId={workout.id}
             workoutExerciseId={null}
             comments={comments.filter((c) => c.workout_exercise_id === null)}
             userId={userId}
             isTrainer={isTrainer}
-            onChange={reloadComments}
+            canPost={isMember}
+            nameOf={nameOf}
+            onChange={cm.retry}
+            onError={showError}
           />
         </section>
       </div>
+
+      {finishOpen && (
+        <FinishSheet
+          open
+          onClose={() => setFinishOpen(false)}
+          workout={workout}
+          exercises={exercises}
+          members={members}
+          logs={allLogs}
+          uid={forUser}
+          userId={userId}
+          history={histories[forUser]}
+          historyFor={(uid) => histories[uid]}
+          canShareFor={canEdit}
+          nameOf={nameOf}
+        />
+      )}
       <Celebration data={celebration} onClose={closeCelebration} />
     </AppShell>
   );
-}
-
-function ExerciseCard({
-  index,
-  we,
-  forUser,
-  logs,
-  prev,
-  comments,
-  nameOf,
-  userId,
-  isTrainer,
-  onChange,
-  onComment,
-  onLogged,
-}: {
-  index: number;
-  we: WorkoutExercise;
-  forUser: string;
-  logs: SetLog[];
-  prev: PrevLog[];
-  comments: CommentWithAuthor[];
-  nameOf: (uid: string) => string;
-  userId: string;
-  isTrainer: boolean;
-  onChange: () => void;
-  onComment: () => void;
-  onLogged: (weight: number | null, reps: number | null) => void;
-}) {
-  const ex = EXERCISE_BY_SLUG[we.exercise_slug];
-  const mine = logs.filter((l) => l.user_id === forUser);
-  const [extraByUser, setExtraByUser] = useState<Record<string, number>>({});
-  const extra = extraByUser[forUser] ?? 0;
-  const [showComments, setShowComments] = useState(false);
-  const [showVideo, setShowVideo] = useState(false);
-  const perHand = ex?.equipment === "dumbbell" || ex?.equipment === "kettlebell";
-  const video = DEFAULT_VIDEOS[we.exercise_slug];
-  const maxLogged = mine.reduce((m, l) => Math.max(m, l.set_number), 0);
-  const rows = Math.max(we.target_sets, maxLogged) + extra;
-  const others = [...new Set(logs.filter((l) => l.user_id !== forUser).map((l) => l.user_id))];
-  const suggestion = ex ? suggestNext(prev, we.target_reps, we.target_sets, ex.equipment) : null;
-  const usesPlates = ex?.equipment === "barbell" || ex?.equipment === "ez_bar";
-  const [plateOpen, setPlateOpen] = useState(false);
-  const lastWeight = [...mine].reverse().find((l) => l.weight)?.weight ?? suggestion?.perSet[0]?.weight ?? null;
-
-  return (
-    <li className="card space-y-4">
-      <div className="flex items-start gap-3">
-        <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-surface-2 text-xs font-bold text-muted">
-          {index + 1}
-        </span>
-        <div className="min-w-0 flex-1 space-y-1.5">
-          <div className="flex items-start justify-between gap-2">
-            <p className="text-lg font-bold leading-tight">{ex?.name ?? we.exercise_slug}</p>
-            <div className="flex shrink-0 gap-3 text-xs font-medium">
-              {usesPlates && (
-                <button className="inline-flex items-center gap-1 text-accent" onClick={() => setPlateOpen(true)}>
-                  <DumbbellIcon size={13} /> Schijven
-                </button>
-              )}
-              {video && (
-                <button className="inline-flex items-center gap-1 text-accent" onClick={() => setShowVideo((v) => !v)}>
-                  {showVideo ? <CloseIcon size={12} /> : <PlayIcon size={12} />} Video
-                </button>
-              )}
-              {ex && (
-                <Link href={`/exercises/${ex.slug}`} className="inline-flex items-center text-accent">
-                  Uitleg <ChevronRightIcon size={14} />
-                </Link>
-              )}
-            </div>
-          </div>
-          <p className="text-sm text-muted">
-            {we.target_sets} × {we.target_reps} reps
-          </p>
-          {ex && <MuscleChips primary={ex.primary} secondary={ex.secondary} limit={5} />}
-          {we.notes && <p className="text-sm italic text-muted">“{we.notes}”</p>}
-        </div>
-      </div>
-
-      {showVideo && video && (
-        <div className="aspect-video overflow-hidden rounded-xl bg-black">
-          <iframe
-            className="h-full w-full"
-            src={`https://www.youtube-nocookie.com/embed/${video.id}`}
-            title={`${ex?.name ?? we.exercise_slug} uitleg`}
-            allow="accelerometer; encrypted-media; gyroscope; picture-in-picture"
-            allowFullScreen
-          />
-        </div>
-      )}
-
-      {prev.length > 0 && (
-        <div className="space-y-2 rounded-xl bg-surface-2 px-3 py-2.5">
-          <p className="text-xs text-muted">
-            Vorige keer ({formatDate(prev[0].workout_exercises.workouts.date, { weekday: undefined, month: "short" })}):{" "}
-            <span className="text-ink">{prev.map(fmtSet).join(" · ")}</span>
-          </p>
-          {suggestion && (
-            <div className="flex items-start gap-2 border-t border-line pt-2">
-              <ArrowUpIcon size={14} className="mt-0.5 shrink-0 text-accent" />
-              <p className="text-xs">
-                <span className="font-semibold text-accent">Advies vandaag: {suggestion.headline}</span>
-                <span className="block text-muted">{suggestion.reason}</span>
-              </p>
-            </div>
-          )}
-        </div>
-      )}
-      {usesPlates && plateOpen && <PlateCalculator open onClose={() => setPlateOpen(false)} initial={lastWeight} />}
-
-      <div className="space-y-2">
-        <div className="grid grid-cols-[2rem_1fr_1fr_2.5rem] gap-2 px-1 text-[11px] font-medium uppercase tracking-wide text-muted">
-          <span>Set</span>
-          <span title={perHand ? "Gewicht per dumbbell" : undefined}>{perHand ? "Kg p/db" : "Kg"}</span>
-          <span>Reps</span>
-          <span />
-        </div>
-        {Array.from({ length: rows }, (_, i) => i + 1).map((n) => (
-          <SetRow
-            key={`${forUser}-${n}`}
-            workoutExerciseId={we.id}
-            userId={forUser}
-            setNumber={n}
-            log={mine.find((l) => l.set_number === n)}
-            hint={suggestion?.perSet[n - 1] ?? prev.find((p) => p.set_number === n) ?? prev[prev.length - 1]}
-            onChange={onChange}
-            onLogged={onLogged}
-          />
-        ))}
-        <button className="w-full rounded-xl border border-dashed border-line py-2 text-sm text-muted hover:text-ink" onClick={() => setExtraByUser((e) => ({ ...e, [forUser]: extra + 1 }))}>
-          + Set
-        </button>
-      </div>
-
-      {others.length > 0 && (
-        <div className="space-y-1 border-t border-line pt-3">
-          {others.map((uid) => (
-            <p key={uid} className="text-sm">
-              <span className="font-medium">{uid === userId ? "Jij" : nameOf(uid)}:</span>{" "}
-              <span className="text-muted">
-                {logs
-                  .filter((l) => l.user_id === uid)
-                  .sort((a, b) => a.set_number - b.set_number)
-                  .map(fmtSet)
-                  .join(" · ")}
-              </span>
-            </p>
-          ))}
-        </div>
-      )}
-
-      <div className="border-t border-line pt-3">
-        <button className="text-sm text-muted hover:text-ink" onClick={() => setShowComments((v) => !v)}>
-          <ChatIcon size={15} className="mr-1.5 inline -translate-y-px" />
-          {comments.length > 0 ? `${comments.length} opmerking${comments.length === 1 ? "" : "en"}` : "Opmerking plaatsen"}
-        </button>
-        {showComments && (
-          <div className="mt-3">
-            <CommentThread
-              workoutId={we.workout_id}
-              workoutExerciseId={we.id}
-              comments={comments}
-              userId={userId}
-              isTrainer={isTrainer}
-              onChange={onComment}
-            />
-          </div>
-        )}
-      </div>
-    </li>
-  );
-}
-
-function SetRow({
-  workoutExerciseId,
-  userId,
-  setNumber,
-  log,
-  hint,
-  onChange,
-  onLogged,
-}: {
-  workoutExerciseId: string;
-  userId: string;
-  setNumber: number;
-  log?: SetLog;
-  /** Voorinvulling: advies voor deze set, of wat je vorige keer deed. */
-  hint?: { weight: number | null; reps: number | null };
-  onChange: () => void;
-  onLogged: (weight: number | null, reps: number | null) => void;
-}) {
-  const [weight, setWeight] = useState(log?.weight?.toString() ?? "");
-  const [reps, setReps] = useState(log?.reps?.toString() ?? "");
-  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "queued" | "error">("idle");
-  // Offline ingevuld en in de wachtrij gezet (nog niet in de database).
-  const [queued, setQueued] = useState<{ weight: number | null; reps: number | null } | null>(null);
-
-  // Bijwerken wanneer de opgeslagen waarde verandert (bijv. de trainer past deze set aan).
-  // Per veld, zodat een veld waarin je nog typt niet wordt overschreven.
-  const [seen, setSeen] = useState({ weight: log?.weight ?? null, reps: log?.reps ?? null });
-  if ((log?.weight ?? null) !== seen.weight || (log?.reps ?? null) !== seen.reps) {
-    if ((log?.weight ?? null) !== seen.weight) setWeight(log?.weight?.toString() ?? "");
-    if ((log?.reps ?? null) !== seen.reps) setReps(log?.reps?.toString() ?? "");
-    setSeen({ weight: log?.weight ?? null, reps: log?.reps ?? null });
-  }
-
-  const key = { workout_exercise_id: workoutExerciseId, user_id: userId, set_number: setNumber };
-  const done = (log && (log.reps ?? 0) > 0) || (queued && (queued.reps ?? 0) > 0);
-
-  async function save(w = weight, r = reps) {
-    const wNum = w.trim() === "" ? null : Number(w.replace(",", "."));
-    const rNum = r.trim() === "" ? null : Math.round(Number(r));
-    const current = queued ?? log;
-    if (wNum === (current?.weight ?? null) && rNum === (current?.reps ?? null)) return;
-    if (wNum === null && rNum === null) {
-      if (current) await remove();
-      return;
-    }
-    if ((wNum !== null && Number.isNaN(wNum)) || (rNum !== null && Number.isNaN(rNum))) return setStatus("error");
-    setStatus("saving");
-    const row = { ...key, weight: wNum, reps: rNum };
-    const { error } = await supabase.from("set_logs").upsert(row, { onConflict: "workout_exercise_id,user_id,set_number" });
-    if (error && isNetworkError(error)) {
-      // Geen verbinding: bewaren en later versturen.
-      enqueue({ kind: "upsert", row });
-      setQueued({ weight: wNum, reps: rNum });
-      setStatus("queued");
-      navigator.vibrate?.(12);
-      onLogged(wNum, rNum);
-      return;
-    }
-    if (error) {
-      setStatus("error");
-      alert(errorMessage(error));
-      return;
-    }
-    setQueued(null);
-    setStatus("saved");
-    navigator.vibrate?.(12);
-    onLogged(wNum, rNum);
-    setTimeout(() => setStatus("idle"), 1200);
-    onChange();
-  }
-
-  async function remove() {
-    if (!log && !queued) return;
-    setQueued(null);
-    setStatus("idle");
-    const { error } = log
-      ? await supabase.from("set_logs").delete().eq("id", log.id)
-      : { error: { message: "Failed to fetch" } };
-    if (error && isNetworkError(error)) enqueue({ kind: "delete", key });
-    onChange();
-  }
-
-  /** Snel afvinken: gebruikt het vorige gewicht/reps als je niets hebt ingevuld. */
-  function quickComplete() {
-    const w = weight || hint?.weight?.toString() || "";
-    const r = reps || hint?.reps?.toString() || "";
-    setWeight(w);
-    setReps(r);
-    save(w, r);
-  }
-
-  return (
-    <div className={`grid grid-cols-[2rem_1fr_1fr_2.5rem] items-center gap-2 rounded-xl ${done ? "bg-accent/5" : ""}`}>
-      <span className={`text-center text-sm font-bold ${done ? "text-accent" : "text-muted"}`}>{setNumber}</span>
-      <input
-        className="input py-2 text-center tabular-nums"
-        inputMode="decimal"
-        value={weight}
-        placeholder={hint?.weight?.toString() ?? "–"}
-        onChange={(e) => setWeight(e.target.value)}
-        onBlur={() => save()}
-        aria-label={`Gewicht set ${setNumber}`}
-      />
-      <input
-        className="input py-2 text-center tabular-nums"
-        inputMode="numeric"
-        value={reps}
-        placeholder={hint?.reps?.toString() ?? "–"}
-        onChange={(e) => setReps(e.target.value)}
-        onBlur={() => save()}
-        aria-label={`Reps set ${setNumber}`}
-      />
-      <button
-        onClick={done ? remove : quickComplete}
-        aria-label={done ? "Set wissen" : "Set afronden"}
-        title={queued ? "Offline bewaard, wordt verstuurd zodra er verbinding is" : undefined}
-        className={`flex h-10 w-10 items-center justify-center rounded-xl border text-lg ${
-          queued
-            ? "border-dashed border-accent text-accent"
-            : done
-              ? "border-accent bg-accent text-accent-ink"
-              : "border-line text-muted"
-        } ${status === "error" ? "border-danger text-danger" : ""} ${status === "saved" || status === "queued" ? "animate-pop" : ""} transition-colors duration-200 active:scale-90`}
-      >
-        {status === "saving" ? "…" : <CheckIcon size={18} strokeWidth={2.6} />}
-      </button>
-    </div>
-  );
-}
-
-function CommentThread({
-  workoutId,
-  workoutExerciseId,
-  comments,
-  userId,
-  isTrainer,
-  onChange,
-}: {
-  workoutId: string;
-  workoutExerciseId: string | null;
-  comments: CommentWithAuthor[];
-  userId: string;
-  isTrainer: boolean;
-  onChange: () => void;
-}) {
-  const [body, setBody] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  async function post(e: React.FormEvent) {
-    e.preventDefault();
-    if (!body.trim()) return;
-    setBusy(true);
-    const { error } = await supabase
-      .from("comments")
-      .insert({ workout_id: workoutId, workout_exercise_id: workoutExerciseId, body: body.trim() });
-    setBusy(false);
-    if (error) return alert(errorMessage(error));
-    setBody("");
-    onChange();
-  }
-
-  async function remove(id: string) {
-    await supabase.from("comments").delete().eq("id", id);
-    onChange();
-  }
-
-  return (
-    <div className="space-y-3">
-      {comments.map((c) => (
-        <div key={c.id} className="rounded-xl bg-surface-2 px-3 py-2">
-          <div className="flex items-baseline justify-between gap-2">
-            <p className="text-sm font-semibold">{c.user_id === userId ? "Jij" : c.profiles?.display_name}</p>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-muted">{timeAgo(c.created_at)}</span>
-              {(c.user_id === userId || isTrainer) && (
-                <button className="text-muted hover:text-danger" onClick={() => remove(c.id)} aria-label="Verwijderen">
-                  <CloseIcon size={13} />
-                </button>
-              )}
-            </div>
-          </div>
-          <p className="whitespace-pre-wrap text-sm">{c.body}</p>
-        </div>
-      ))}
-      <form onSubmit={post} className="flex gap-2">
-        <input
-          className="input flex-1"
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          placeholder={workoutExerciseId ? "Bijv. voelde zwaar, volgende keer +2,5 kg" : "Schrijf een opmerking…"}
-          maxLength={2000}
-        />
-        <button className="btn-primary" disabled={busy || !body.trim()}>
-          Plaats
-        </button>
-      </form>
-    </div>
-  );
-}
-
-function fmtSet(l: SetLog) {
-  const w = l.weight != null ? `${Number(l.weight)}kg` : "";
-  const r = l.reps != null ? `${l.reps}` : "–";
-  return w ? `${w}×${r}` : `${r} reps`;
 }

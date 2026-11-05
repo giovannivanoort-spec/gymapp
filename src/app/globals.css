@@ -11,12 +11,44 @@
   --color-accent-ink: #12160a;
   --color-danger: #ff6b6b;
   --color-warn: #ffc857;
+  /* Tweede persoon in vergelijkingen (jij = accent, de ander = rival). */
+  --color-rival: #7cc4ff;
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+:root {
+  /*
+   * Lagen (z-index) voor alles wat boven de pagina zweeft. Gebruik in Tailwind als z-(--z-toast).
+   * Kopbalk 20 < navigatie 30 < paneel (Sheet) 50 < banner (offline, update) 60 < melding 70.
+   */
+  --z-header: 20;
+  --z-nav: 30;
+  --z-sheet: 50;
+  --z-banner: 60;
+  --z-toast: 70;
+  /* Hoogte van de onderbalk (zonder safe area); meldingen en zwevende knoppen staan erboven. */
+  --nav-h: 4rem;
 }
 
 html {
   color-scheme: dark;
   -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+::selection {
+  background: rgb(200 245 58 / 0.3);
+  color: var(--color-ink);
+}
+
+/* Zichtbare focus voor toetsenbord en schakelbediening; tikken met de vinger geeft geen rand. */
+:where(a, button, summary, [role="button"], [role="tab"], [tabindex]):focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+:where([tabindex="-1"]):focus-visible {
+  outline: none;
 }
 
 body {
@@ -93,6 +125,38 @@ body {
     transform: none;
   }
 }
+@keyframes sheet-down {
+  to {
+    transform: translateY(100%);
+  }
+}
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes scale-out {
+  to {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes splash-glow {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 0.8;
+    transform: scale(1.08);
+  }
+}
 @keyframes ring-pulse {
   0% {
     opacity: 0.6;
@@ -101,6 +165,17 @@ body {
   100% {
     opacity: 0;
     transform: scale(1.8);
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
   }
 }
 
@@ -122,8 +197,53 @@ body {
 @utility animate-pop {
   animation: pop 0.35s ease-out;
 }
+/* Uitgaande animaties: zonder "from", zodat ze verdergaan vanaf waar het element nu is
+   (bijv. een half naar beneden gesleept paneel). */
+@utility animate-sheet-down {
+  animation: sheet-down 0.22s cubic-bezier(0.4, 0, 1, 1) forwards;
+}
+@utility animate-fade-out {
+  animation: fade-out 0.2s ease-in forwards;
+}
+@utility animate-scale-out {
+  animation: scale-out 0.18s ease-in forwards;
+}
+@utility animate-toast-in {
+  animation: toast-in 0.28s cubic-bezier(0.2, 0.9, 0.25, 1.1) backwards;
+}
+@utility animate-splash-glow {
+  animation: splash-glow 2.4s ease-in-out infinite;
+}
+@utility spinner {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  flex-shrink: 0;
+  border-radius: 9999px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  animation: spin 0.7s linear infinite;
+}
 @utility animate-badge-reveal {
   animation: badge-reveal 0.9s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards;
+}
+/* Teller of stip in de navigatie (vriendschapsverzoeken, training van vandaag). */
+@keyframes badge-in {
+  from {
+    opacity: 0;
+    transform: scale(0.3);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@utility animate-badge-in {
+  animation: badge-in 0.3s cubic-bezier(0.2, 0.9, 0.25, 1.3) backwards;
+}
+/* Rustige uitdijende ring achter een stip; stopt vanzelf bij "minder beweging" (zie hieronder). */
+@utility animate-dot-pulse {
+  animation: ring-pulse 2s ease-out infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -142,8 +262,9 @@ body {
 @utility skeleton {
   @apply relative overflow-hidden rounded-xl bg-surface-2 after:absolute after:inset-0 after:-translate-x-full after:bg-gradient-to-r after:from-transparent after:via-white/5 after:to-transparent after:animate-[shimmer_1.4s_infinite];
 }
+/* min-h-11: elke knop minstens 44px hoog (tikdoel). Een losse min-h-* op de knop zelf wint nog steeds. */
 @utility btn {
-  @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none;
+  @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition select-none active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent;
 }
 @utility btn-primary {
   @apply btn bg-accent text-accent-ink hover:brightness-110;
@@ -155,7 +276,7 @@ body {
   @apply btn border border-danger/40 text-danger hover:bg-danger/10;
 }
 @utility input {
-  @apply w-full rounded-xl border border-line bg-surface-2 px-3 py-2.5 text-base text-ink placeholder:text-muted/70 outline-none focus:border-accent;
+  @apply w-full rounded-xl border border-line bg-surface-2 px-3 py-2.5 text-base text-ink transition-colors duration-150 placeholder:text-muted/70 outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/35 aria-invalid:border-danger/70 aria-invalid:focus-visible:ring-danger/30 disabled:opacity-60;
 }
 @utility label {
   @apply mb-1 block text-xs font-medium uppercase tracking-wide text-muted;

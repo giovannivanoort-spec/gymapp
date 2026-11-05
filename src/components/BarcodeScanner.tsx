@@ -107,6 +107,9 @@ function ScannerOverlay({
   const [attempt, setAttempt] = useState(0);
   const [manual, setManual] = useState("");
   const [manualError, setManualError] = useState<string | null>(null);
+  /** Zaklamp: alleen als de camera het ondersteunt (vooral Android). */
+  const [torch, setTorch] = useState<{ available: boolean; on: boolean }>({ available: false, on: false });
+  const trackRef = useRef<MediaStreamTrack | null>(null);
 
   const emitDetected = useEffectEvent((code: string) => {
     if (doneRef.current) return;
@@ -147,6 +150,7 @@ function ScannerOverlay({
       controls = null;
       stream?.getTracks().forEach((t) => t.stop());
       stream = null;
+      trackRef.current = null;
       if (video) {
         video.pause();
         video.srcObject = null;
@@ -239,6 +243,10 @@ function ScannerOverlay({
         }
         stream = s;
         video.srcObject = s;
+        const track = s.getVideoTracks()[0] ?? null;
+        trackRef.current = track;
+        const caps = (track?.getCapabilities?.() ?? {}) as { torch?: boolean };
+        setTorch({ available: !!caps.torch, on: false });
         await video.play().catch(() => undefined);
         if (cancelled) return;
         setStatus("scanning");
@@ -258,7 +266,18 @@ function ScannerOverlay({
     };
   }, [attempt]);
 
+  const toggleTorch = () => {
+    const track = trackRef.current;
+    if (!track) return;
+    const on = !torch.on;
+    track
+      .applyConstraints({ advanced: [{ torch: on } as MediaTrackConstraintSet] })
+      .then(() => setTorch({ available: true, on }))
+      .catch(() => setTorch({ available: false, on: false }));
+  };
+
   const retry = () => {
+    setTorch({ available: false, on: false });
     setStatus("starting");
     setAttempt((a) => a + 1);
   };
@@ -283,7 +302,7 @@ function ScannerOverlay({
   return (
     <Portal>
       <div
-        className="animate-fade-in fixed inset-0 z-[60] flex flex-col bg-black text-ink"
+        className="animate-fade-in fixed inset-0 z-(--z-banner) flex flex-col bg-black text-ink"
         role="dialog"
         aria-modal
         aria-label="Barcode scannen"
@@ -302,13 +321,27 @@ function ScannerOverlay({
         {/* Bovenbalk */}
         <div className="relative z-10 flex items-center justify-between px-4 pt-[max(1rem,env(safe-area-inset-top))]">
           <p className="text-sm font-semibold text-white/90">Barcode scannen</p>
-          <button
-            onClick={onClose}
-            className="rounded-full bg-black/50 p-2.5 text-white backdrop-blur transition hover:bg-black/70 active:scale-95"
-            aria-label="Sluiten"
-          >
-            <CloseIcon size={22} />
-          </button>
+          <div className="flex items-center gap-2">
+            {torch.available && status === "scanning" && (
+              <button
+                onClick={toggleTorch}
+                aria-pressed={torch.on}
+                aria-label={torch.on ? "Zaklamp uit" : "Zaklamp aan"}
+                className={`flex h-11 w-11 items-center justify-center rounded-full backdrop-blur transition active:scale-95 ${
+                  torch.on ? "bg-accent text-accent-ink" : "bg-black/50 text-white hover:bg-black/70"
+                }`}
+              >
+                <TorchIcon />
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="flex h-11 w-11 items-center justify-center rounded-full bg-black/50 text-white backdrop-blur transition hover:bg-black/70 active:scale-95"
+              aria-label="Sluiten"
+            >
+              <CloseIcon size={22} />
+            </button>
+          </div>
         </div>
 
         {/* Scanvak */}
@@ -343,7 +376,7 @@ function ScannerOverlay({
                 {canRetry && (
                   <button
                     onClick={retry}
-                    className="btn-ghost px-3 py-1.5 text-xs"
+                    className="btn-ghost min-h-11 px-4 text-xs"
                   >
                     Opnieuw proberen
                   </button>
@@ -396,6 +429,15 @@ function ScannerOverlay({
         </form>
       </div>
     </Portal>
+  );
+}
+
+function TorchIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M8 2h8v4l-2 3v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V9L8 6z" />
+      <path d="M8 6h8M12 13v2" />
+    </svg>
   );
 }
 
