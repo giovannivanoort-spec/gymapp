@@ -17,6 +17,7 @@ import { RankSummaryCard } from "@/components/progress/RankSummaryCard";
 import { RecentPRs } from "@/components/progress/RecentPRs";
 import { Records } from "@/components/progress/Records";
 import { TrainingRhythm } from "@/components/progress/TrainingRhythm";
+import { SleepSummaryLink } from "@/components/sleep/SleepSummaryLink";
 import { toISODate } from "@/lib/dates";
 import { nl, sessionsBySlug, useHistoryState, type HistorySet, type Session } from "@/lib/history";
 import { exerciseName, monthRecap, recentPRs } from "@/lib/progress/records";
@@ -253,6 +254,7 @@ function Progress() {
               </button>
             </div>
           </div>
+          <SleepSummaryLink userId={userId || null} />
           <ProgressBodyweight />
         </div>
       ) : (
@@ -367,6 +369,8 @@ function Progress() {
             <section className="card">
               <TrainingRhythm days={trainedDays} goal={profile?.weekly_goal ?? 3} />
             </section>
+
+            <SleepSummaryLink userId={userId || null} />
           </TabPanel>
 
           <TabPanel id="volume" active={tab} visited={visited}>

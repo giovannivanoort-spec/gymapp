@@ -5,7 +5,9 @@ import { ChevronRightIcon, PlusIcon, CloseIcon } from "@/components/Icons";
 import { ActivityEntrySheet } from "@/components/activity/ActivityEntrySheet";
 import { ConsentSheet } from "@/components/activity/ConsentSheet";
 import { StepsIcon } from "@/components/activity/icons";
+import { MoonIcon } from "@/components/sleep/icons";
 import { effectiveSteps, sourceLine, useActivitySettings, useRecentActivity, type DailyActivity } from "@/lib/activity";
+import { useSleepAvailable } from "@/lib/sleep";
 import { timeAgo, toISODate } from "@/lib/dates";
 import { addDays, parseISODate } from "@/lib/week";
 
@@ -13,8 +15,10 @@ const fmt = (n: number) => Math.round(n).toLocaleString("nl-NL");
 const BAR = "width 0.8s cubic-bezier(0.2,0.8,0.2,1)";
 
 // "Niet nu" voor de uitnodiging op Home, per gebruiker op dit toestel. Daarna blijft het te vinden
-// via Profiel → Koppelingen en de stappenranglijst.
+// via Profiel → Koppelingen en de stappenranglijst. Zelfde voor de vraag om ook slaap toe te staan
+// (opnieuw toestemming geven), met een eigen sleutel.
 const DISMISS_KEY = (uid: string) => `spotter:activity-cta-dismissed:${uid}`;
+const SLEEP_DISMISS_KEY = (uid: string) => `spotter:sleep-reconsent-dismissed:${uid}`;
 const dismissListeners = new Set<() => void>();
 const hiddenThisSession = new Set<string>();
 function subscribeDismiss(cb: () => void) {
@@ -23,20 +27,21 @@ function subscribeDismiss(cb: () => void) {
     dismissListeners.delete(cb);
   };
 }
-function readDismissed(uid: string | null): boolean {
-  if (!uid) return true;
+function readDismissed(key: string | null): boolean {
+  if (!key) return true;
+  if (hiddenThisSession.has(key)) return true;
   try {
-    return window.localStorage.getItem(DISMISS_KEY(uid)) === "1";
+    return window.localStorage.getItem(key) === "1";
   } catch {
     return false;
   }
 }
-function dismissCta(uid: string) {
+function dismissCta(key: string) {
+  hiddenThisSession.add(key);
   try {
-    window.localStorage.setItem(DISMISS_KEY(uid), "1");
+    window.localStorage.setItem(key, "1");
   } catch {
     // privévenster of geblokkeerde opslag: alleen voor nu verbergen
-    hiddenThisSession.add(uid);
   }
   dismissListeners.forEach((cb) => cb());
 }
@@ -45,6 +50,9 @@ function dismissCta(uid: string) {
  * Stappen van vandaag op Home (alleen zichtbaar voor jou). Zonder toestemming één rustige regel
  * die naar de toestemming leidt (weg te tikken met "Niet nu"); zonder database-upgrade niets.
  * Tikken op de kaart opent handmatig invoeren.
+ * Toestemming van vóór slaap (needsReconsent): de stappen blijven gewoon staan (daar geldt die toestemming
+ * nog voor); eronder een losse, weg te tikken vraag om ook slaap toe te staan (alleen als slaap op de
+ * server beschikbaar is). Stappen worden nooit verborgen omdat de toestemming voor slaap ontbreekt.
  */
 export function ActivityCard({ userId, today }: { userId: string; today: string }) {
   const uid = userId || null;
@@ -53,11 +61,9 @@ export function ActivityCard({ userId, today }: { userId: string; today: string 
   const recent = useRecentActivity(settingsS.data?.consented ? uid : null, 7);
   const [consentOpen, setConsentOpen] = useState(false);
   const [entryOpen, setEntryOpen] = useState(false);
-  const dismissed = useSyncExternalStore(
-    subscribeDismiss,
-    () => readDismissed(uid) || (!!uid && hiddenThisSession.has(uid)),
-    () => true,
-  );
+  const dismissed = useSyncExternalStore(subscribeDismiss, () => readDismissed(uid && DISMISS_KEY(uid)), () => true);
+  const sleepDismissed = useSyncExternalStore(subscribeDismiss, () => readDismissed(uid && SLEEP_DISMISS_KEY(uid)), () => true);
+  const sleepAvailable = useSleepAvailable();
 
   const settings = settingsS.data;
   let body: React.ReactNode;
@@ -71,16 +77,14 @@ export function ActivityCard({ userId, today }: { userId: string; today: string 
   } else if (!settings.consented) {
     body = dismissed ? null : (
       <CompactRow
-        title="Stappen bijhouden"
-        text="Dagelijkse stappen en je stappendoel, alleen voor jou"
+        title="Stappen en slaap bijhouden"
+        text="Dagelijkse stappen, je stappendoel en je slaap, alleen voor jou"
         onClick={() => setConsentOpen(true)}
-        onDismiss={uid ? () => dismissCta(uid) : undefined}
+        onDismiss={uid ? () => dismissCta(DISMISS_KEY(uid)) : undefined}
       />
     );
-  } else if (settings.needsReconsent) {
-    body = <CompactRow title="Toestemming bijwerken" text="De uitleg over je activiteitsgegevens is gewijzigd" onClick={() => setConsentOpen(true)} />;
   } else {
-    body = (
+    const steps = (
       <StepsToday
         days={recent.data}
         failed={!recent.data && !!recent.error}
@@ -90,6 +94,21 @@ export function ActivityCard({ userId, today }: { userId: string; today: string 
         onOpen={() => setEntryOpen(true)}
       />
     );
+    body =
+      settings.needsReconsent && sleepAvailable.data === true && !sleepDismissed ? (
+        <>
+          {steps}
+          <CompactRow
+            icon="sleep"
+            title="Ook je slaap bijhouden?"
+            text="Alleen nodig voor slaap; je stappen werken gewoon door"
+            onClick={() => setConsentOpen(true)}
+            onDismiss={uid ? () => dismissCta(SLEEP_DISMISS_KEY(uid)) : undefined}
+          />
+        </>
+      ) : (
+        steps
+      );
   }
 
   return (
@@ -230,11 +249,23 @@ function StepsToday({
   );
 }
 
-function CompactRow({ title, text, onClick, onDismiss }: { title: string; text: string; onClick?: () => void; onDismiss?: () => void }) {
+function CompactRow({
+  title,
+  text,
+  icon = "steps",
+  onClick,
+  onDismiss,
+}: {
+  title: string;
+  text: string;
+  icon?: "steps" | "sleep";
+  onClick?: () => void;
+  onDismiss?: () => void;
+}) {
   const inner = (
     <>
       <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-surface-2 text-muted">
-        <StepsIcon size={18} />
+        {icon === "sleep" ? <MoonIcon size={18} /> : <StepsIcon size={18} />}
       </span>
       <span className="min-w-0 flex-1">
         <span className="block text-sm font-semibold">{title}</span>

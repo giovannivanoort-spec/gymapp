@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 11 en ouder (android:fullBackupContent): niets meenemen in de back-up. Zelfde reden als in
+  res/xml/data_extraction_rules.xml (Android 12+): op het toestel staan alleen kopieën, waaronder
+  gezondheidsgegevens (stappen en slaap in de WebView-opslag en in de widget, spotter_widget.xml).
+  android:allowBackup staat bovendien op false; dit bestand is een extra vangnet.
+-->
+<full-backup-content>
+    <exclude domain="root" path="." />
+    <exclude domain="file" path="." />
+    <exclude domain="database" path="." />
+    <exclude domain="sharedpref" path="." />
+    <exclude domain="external" path="." />
+</full-backup-content>

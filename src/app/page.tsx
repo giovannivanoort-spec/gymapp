@@ -18,6 +18,7 @@ import { PlanStrip } from "@/components/home/PlanStrip";
 import { PullToRefresh } from "@/components/home/PullToRefresh";
 import { RankGoalCard } from "@/components/home/RankGoalCard";
 import { RestCard } from "@/components/home/RestCard";
+import { SleepCard } from "@/components/home/SleepCard";
 import { SyncNote, type HomeSyncStatus } from "@/components/home/SyncNote";
 import { TodaySession } from "@/components/home/TodaySession";
 import { WeekGoalSheet } from "@/components/home/WeekGoalSheet";
@@ -33,6 +34,7 @@ import { fetchMyGroups, myGroupsKey } from "@/lib/groups";
 import { fetchHistory } from "@/lib/history";
 import type { NutritionProfile } from "@/lib/nutrition/targets";
 import { aggregateRanks, type LogLike } from "@/lib/ranks";
+import { invalidateSleep } from "@/lib/sleep";
 import { rankAll } from "@/lib/useRanks";
 import { parseISODate } from "@/lib/week";
 
@@ -85,8 +87,11 @@ export default function HomePage() {
   /** Alles verversen en wachten tot de gegevens van deze pagina binnen zijn (trek-om-te-verversen, "Opnieuw"). */
   const refreshAll = () => {
     refreshLive();
-    // Stappen (eigen kaart, eigen sleutels): op de achtergrond mee verversen.
-    if (uid) invalidateActivity(uid);
+    // Stappen en slaap (eigen kaarten, eigen sleutels): op de achtergrond mee verversen.
+    if (uid) {
+      invalidateActivity(uid);
+      invalidateSleep(uid);
+    }
     return Promise.allSettled(sources.map(({ key, fetcher }) => (key ? fetchCached<unknown>(key, fetcher, true) : null)));
   };
 
@@ -274,6 +279,8 @@ export default function HomePage() {
         <NutritionCard week={foodS.data} failed={failedToLoad(foodS)} today={today} profile={profile as NutritionProfile | null} userId={userId} />
 
         <ActivityCard userId={userId} today={today} />
+
+        <SleepCard userId={userId} today={today} />
 
         <HomeGroups
           groups={groups}

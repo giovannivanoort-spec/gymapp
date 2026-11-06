@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Voorbeeld in de widgetkiezer voor Android 8 t/m 11 (previewImage). Schets van widget_small.xml:
+  donkere kaart, stappen met groene balk, regels voor slaap en training. Android 12+ toont
+  @layout/widget_preview met echte tekst.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="180dp"
+    android:height="180dp"
+    android:viewportWidth="180"
+    android:viewportHeight="180">
+
+    <!-- Kaart met afgeronde hoeken en dunne rand -->
+    <path
+        android:fillColor="#0b0d10"
+        android:strokeColor="#2a2f37"
+        android:strokeWidth="1"
+        android:pathData="M20.5,0.5 H159.5 A20,20 0 0 1 179.5,20.5 V159.5 A20,20 0 0 1 159.5,179.5 H20.5 A20,20 0 0 1 0.5,159.5 V20.5 A20,20 0 0 1 20.5,0.5 Z" />
+
+    <!-- Label "Stappen" -->
+    <path android:fillColor="#9aa1ab" android:pathData="M18,20 H62 A3,3 0 0 1 62,26 H18 A3,3 0 0 1 18,20 Z" />
+    <!-- Groot getal -->
+    <path android:fillColor="#eceef1" android:pathData="M18,34 H86 A6,6 0 0 1 86,50 H18 A6,6 0 0 1 18,34 Z" />
+    <!-- Doel -->
+    <path android:fillColor="#9aa1ab" android:pathData="M96,42 H128 A3,3 0 0 1 128,48 H96 A3,3 0 0 1 96,42 Z" />
+    <!-- Voortgangsbalk: spoor en vulling -->
+    <path android:fillColor="#1d2128" android:pathData="M21,62 H159 A3,3 0 0 1 159,68 H21 A3,3 0 0 1 21,62 Z" />
+    <path android:fillColor="#c8f53a" android:pathData="M21,62 H131 A3,3 0 0 1 131,68 H21 A3,3 0 0 1 21,62 Z" />
+
+    <!-- Slaap -->
+    <path android:fillColor="#9aa1ab" android:pathData="M18,112 H54 A3,3 0 0 1 54,118 H18 A3,3 0 0 1 18,112 Z" />
+    <path android:fillColor="#eceef1" android:pathData="M112,111 H159 A4,4 0 0 1 159,119 H112 A4,4 0 0 1 112,111 Z" />
+    <!-- Training -->
+    <path android:fillColor="#c8f53a" android:pathData="M18,130 H62 A4,4 0 0 1 62,138 H18 A4,4 0 0 1 18,130 Z" />
+    <path android:fillColor="#eceef1" android:pathData="M72,130 H126 A4,4 0 0 1 126,138 H72 A4,4 0 0 1 72,130 Z" />
+    <!-- Bijgewerkt -->
+    <path android:fillColor="#9aa1ab" android:pathData="M18,152 H86 A2.5,2.5 0 0 1 86,157 H18 A2.5,2.5 0 0 1 18,152 Z" />
+</vector>

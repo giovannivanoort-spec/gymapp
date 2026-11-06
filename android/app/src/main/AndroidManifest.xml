@@ -2,8 +2,16 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!--
+      Geen back-up en geen overzetten naar een nieuwe telefoon: op het toestel staan alleen kopieën van wat in
+      Spotter staat, waaronder gezondheidsgegevens (stappen en slaap in de WebView en in de widget). Zie
+      res/xml/data_extraction_rules.xml (Android 12+) en res/xml/backup_rules.xml (Android 11 en ouder).
+    -->
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        tools:targetApi="31"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -54,6 +62,23 @@
             </intent-filter>
         </activity-alias>
 
+        <!--
+          Widget op het startscherm: stappen, slaap en de volgende training. Niet exported: alleen het
+          systeem (widgets bijwerken) en de app zelf (alarm na middernacht) sturen hem iets.
+          Gegevens komen uit de app via de lokale plugin SpotterWidget (zie docs/android-app.md).
+        -->
+        <receiver
+            android:name=".widget.SpotterWidgetProvider"
+            android:exported="false"
+            android:label="@string/widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/spotter_widget_info" />
+        </receiver>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -75,19 +100,21 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <!--
-      Health Connect: Spotter leest ALLEEN dagtotalen van stappen en actieve kcal. Niets schrijven.
-      Dit moet exact overeenkomen met de Health apps-verklaring in de Play Console.
+      Health Connect: Spotter leest ALLEEN stappen, actieve kcal en slaap (slaapsessies met fases). Niets
+      schrijven. Dit moet exact overeenkomen met de Health apps-verklaring in de Play Console.
     -->
     <uses-permission android:name="android.permission.health.READ_STEPS" />
     <uses-permission android:name="android.permission.health.READ_ACTIVE_CALORIES_BURNED" />
+    <uses-permission android:name="android.permission.health.READ_SLEEP" />
 
     <!--
       @capgo/capacitor-health declareert in zijn eigen manifest 47 gezondheidsrechten. Die zouden
       via de manifest-merger in de app terechtkomen; de Play-beoordeling keurt ongebruikte rechten af.
-      Hieronder worden ze allemaal verwijderd, op de twee hierboven na. npm run android:build controleert
+      Hieronder worden ze allemaal verwijderd, op de drie hierboven na. npm run android:build controleert
       dat deze lijst precies klopt met node_modules/@capgo/capacitor-health/android/src/main/AndroidManifest.xml
       (ook na een update van de plugin). Controleer daarnaast het samengevoegde manifest (Android Studio:
-      AndroidManifest.xml > tabblad Merged Manifest): daar staan alleen READ_STEPS en READ_ACTIVE_CALORIES_BURNED.
+      AndroidManifest.xml > tabblad Merged Manifest): daar staan alleen READ_STEPS, READ_ACTIVE_CALORIES_BURNED
+      en READ_SLEEP.
     -->
     <uses-permission android:name="android.permission.health.WRITE_STEPS" tools:node="remove" />
     <uses-permission android:name="android.permission.health.READ_DISTANCE" tools:node="remove" />
@@ -97,7 +124,6 @@
     <uses-permission android:name="android.permission.health.WRITE_HEART_RATE" tools:node="remove" />
     <uses-permission android:name="android.permission.health.READ_WEIGHT" tools:node="remove" />
     <uses-permission android:name="android.permission.health.WRITE_WEIGHT" tools:node="remove" />
-    <uses-permission android:name="android.permission.health.READ_SLEEP" tools:node="remove" />
     <uses-permission android:name="android.permission.health.WRITE_SLEEP" tools:node="remove" />
     <uses-permission android:name="android.permission.health.READ_RESPIRATORY_RATE" tools:node="remove" />
     <uses-permission android:name="android.permission.health.WRITE_RESPIRATORY_RATE" tools:node="remove" />

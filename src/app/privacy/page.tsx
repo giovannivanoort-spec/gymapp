@@ -13,11 +13,11 @@ import { APP_NAME } from "@/lib/brand";
 
 export const metadata: Metadata = {
   title: "Privacyverklaring",
-  description: `Hoe ${APP_NAME} met je gegevens omgaat, ook met je stappen en verbrande calorieën.`,
+  description: `Hoe ${APP_NAME} met je gegevens omgaat, ook met je stappen, verbrande calorieën en slaap.`,
 };
 
 /** Bij een inhoudelijke wijziging: datum aanpassen (en zo nodig ACTIVITY_CONSENT_VERSION ophogen). */
-const UPDATED = "5 november 2026";
+const UPDATED = "6 november 2026";
 
 const CONTACT = process.env.NEXT_PUBLIC_PRIVACY_CONTACT?.trim() || null;
 const CONTROLLER = process.env.NEXT_PUBLIC_PRIVACY_CONTROLLER?.trim() || `de beheerder van ${APP_NAME}`;
@@ -82,11 +82,12 @@ export default function PrivacyPage() {
             </li>
             <li>
               <strong>Activiteit (alleen met je toestemming):</strong> per dag je totaal aantal stappen en actieve kcal, eventueel
-              totale kcal, en de bron (handmatig of de naam van de app). Geen losse metingen, hartslag, slaap of locatie.
+              totale kcal, en per nacht hoe lang je sliep, je bedtijd en wektijd en eventueel je slaapfases (diep, licht, REM,
+              wakker). Steeds met de bron (handmatig of de naam van de app). Geen losse metingen, hartslag of locatie.
             </li>
           </ul>
           <p>
-            Stappen, verbrande calorieën, gewicht en voeding zijn <strong>gezondheidsgegevens</strong> (bijzondere persoonsgegevens,
+            Stappen, verbrande calorieën, slaap, gewicht en voeding zijn <strong>gezondheidsgegevens</strong> (bijzondere persoonsgegevens,
             art. 9 AVG). Activiteit slaan we daarom alleen op met jouw uitdrukkelijke toestemming. Om toestemming te geven moet je 16
             jaar of ouder zijn.
           </p>
@@ -95,11 +96,11 @@ export default function PrivacyPage() {
         <Section title="Waar je activiteit vandaan komt">
           <ul className="list-disc space-y-1 pl-5">
             <li>
-              <strong>Handmatig:</strong> je vult je stappen zelf in.
+              <strong>Handmatig:</strong> je vult je stappen of je slaap zelf in.
             </li>
             <li>
-              <strong>Health Connect (Android):</strong> met de Android-app van {APP_NAME} haal je dagtotalen op die je telefoon of
-              horloge (bijvoorbeeld Garmin, Samsung of Fitbit) daar heeft opgeslagen. Alleen als je dat zelf toestaat.
+              <strong>Health Connect (Android):</strong> met de Android-app van {APP_NAME} haal je dagtotalen en je slaap op die je
+              telefoon of horloge (bijvoorbeeld Garmin, Samsung of Fitbit) daar heeft opgeslagen. Alleen als je dat zelf toestaat.
             </li>
             <li>
               <strong>Apple Health (iPhone):</strong> later, met een iOS-app, op dezelfde manier.
@@ -115,15 +116,17 @@ export default function PrivacyPage() {
               gebruikt.
             </li>
             <li>
-              <strong>Activiteit opslaan</strong> en je stappendoel tonen: alleen met je toestemming.
+              <strong>Activiteit opslaan</strong> en je stappendoel en je slaap tonen: alleen met je toestemming. Je slaap is
+              alleen voor jezelf: die delen we nooit met vrienden, groepen of je trainer, ook niet als je je stappen deelt.
             </li>
             <li>
               <strong>Stappen delen</strong> met vrienden en groepsgenoten (ook je trainer) op de ranglijst: een aparte toestemming,
               standaard uit. Zij zien alleen je stappen per dag, niet je calorieën, en alleen als zij zelf ook delen.
             </li>
             <li>
-              <strong>De AI-coach</strong> je activiteit laten gebruiken om je vragen te beantwoorden: een aparte toestemming,
-              standaard uit.
+              <strong>De AI-coach</strong> je stappen en actieve kcal laten gebruiken om je vragen te beantwoorden: een aparte
+              toestemming, standaard uit. Je slaap gaat alleen naar de AI-coach als je dat daarnaast nog eens apart aanzet
+              (ook standaard uit).
             </li>
             <li>
               <strong>Calorieën terugverdienen</strong>: extra beweging bij je voedingsdoel optellen. Standaard uit.
@@ -145,7 +148,7 @@ export default function PrivacyPage() {
               <strong>Vercel</strong>: hosting van de app.
             </li>
             <li>
-              <strong>Anthropic (Claude)</strong>: de AI-coach en het schatten van voeding op een foto die je zelf maakt. Je activiteit gaat er alleen heen als je dat hebt aangezet.
+              <strong>Anthropic (Claude)</strong>: de AI-coach en het schatten van voeding op een foto die je zelf maakt. Je activiteit en je slaap gaan er alleen heen als je dat zelf hebt aangezet, en alleen voor het antwoord waarvoor de coach ze ophaalt: ze worden niet in het gesprek bewaard. Anthropic gebruikt ze niet om AI te trainen.
             </li>
             <li>
               <strong>Google en Apple</strong>: het versturen van meldingen (push), als je die aanzet.
@@ -159,9 +162,19 @@ export default function PrivacyPage() {
 
         <Section title="Hoe lang we gegevens bewaren">
           <p>
-            Activiteit bewaren we zolang je toestemming loopt. Trek je die in, dan verwijderen we al je stappen- en caloriegegevens
+            Activiteit bewaren we zolang je toestemming loopt. Trek je die in, dan verwijderen we al je stappen-, calorie- en slaapgegevens
             direct. Je kunt ook alleen je gegevens verwijderen en de toestemming laten staan. Verwijder je je account, dan verdwijnen
             al je gegevens, ook je activiteit.
+          </p>
+          <p>
+            Op je telefoon bewaart de app een kopie van wat je laatst hebt geladen, zodat hij ook zonder verbinding werkt. Trek je je
+            toestemming in of verwijder je je activiteit of slaap, dan verdwijnt ook die kopie. De Android-app maakt geen back-up van
+            deze gegevens in Google Drive en neemt ze niet mee naar een nieuwe telefoon.
+          </p>
+          <p>
+            <strong>Widget (Android):</strong> zet je de widget van {APP_NAME} op je startscherm, dan toont die je stappen van vandaag
+            en je slaap van afgelopen nacht. Iedereen die je startscherm ziet, ziet die dus ook. De widget bewaart deze gegevens alleen
+            op je telefoon, en alleen zolang hij op je startscherm staat. Verwijder je de widget of log je uit, dan worden ze gewist.
           </p>
         </Section>
 

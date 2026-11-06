@@ -11,4 +11,13 @@
       TODO: https://myspotter.nl/privacy zodra het domein live is.
     -->
     <string name="health_connect_privacy_policy_url" translatable="false">https://myspotter.nl/privacy</string>
+
+    <!-- Widget op het startscherm (SpotterWidgetProvider). Naam en omschrijving staan in de widgetkiezer. -->
+    <string name="widget_label">Spotter</string>
+    <string name="widget_description">Stappen, slaap en je volgende training</string>
+    <string name="widget_placeholder">Open Spotter om te synchroniseren</string>
+    <string name="widget_steps_label">Stappen</string>
+    <string name="widget_sleep_label">Slaap</string>
+    <string name="widget_training_label">Volgende training</string>
+    <string name="widget_dash" translatable="false">–</string>
 </resources>

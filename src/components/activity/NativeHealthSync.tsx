@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import { activitySettingsKey, fetchActivitySettings } from "@/lib/activity";
 import { fetchCached } from "@/lib/cache";
 import {
@@ -13,6 +13,8 @@ import {
   syncDaysSince,
   syncHealth,
 } from "@/lib/native/health";
+import { widgetSupported } from "@/lib/native/widget";
+import { NativeWidgetSync } from "./NativeWidgetSync";
 
 /** Hooguit eens per zoveel ms automatisch synchroniseren. */
 const SYNC_THROTTLE_MS = 15 * 60_000;
@@ -35,8 +37,14 @@ let failures = 0;
  * Na een mislukte poging wacht hij 15 minuten, daarna een uur. Fouten blijven stil (de gebruiker ziet
  * de status en een knop "Nu synchroniseren" bij Profiel > Koppelingen).
  * Doet niets op het web.
+ *
+ * Monteert ook NativeWidgetSync (widget op het startscherm), als de APK de widget heeft. Die volgt de
+ * cache, dus na elke sync hier (die de activiteit en slaap in de cache ververst) wordt de widget vanzelf bijgewerkt.
  */
 export function NativeHealthSync({ userId }: { userId: string }) {
+  // Vast gegeven van de APK; op de server en in de browser altijd false.
+  const widget = useSyncExternalStore(noopSubscribe, widgetSupported, () => false);
+
   useEffect(() => {
     if (!userId || !isNativeApp() || nativePlatform() !== "android") return;
     let alive = true;
@@ -54,10 +62,10 @@ export function NativeHealthSync({ userId }: { userId: string }) {
       if (typeof navigator !== "undefined" && navigator.onLine === false) return;
       lastAttemptAt = now;
       try {
-        // Goedkoop eerst: zonder recht op stappen heeft niets anders zin (de gebruiker ziet "Geen toegang" bij Koppelingen).
+        // Goedkoop eerst: zonder recht op stappen en op slaap heeft niets anders zin (de gebruiker ziet "Geen toegang" bij Koppelingen).
         const perms = await healthPermissions();
         if (!alive) return;
-        if (!perms.steps) {
+        if (!perms.steps && !perms.sleep) {
           failures++;
           return;
         }
@@ -73,10 +81,17 @@ export function NativeHealthSync({ userId }: { userId: string }) {
           disconnectHealth(userId);
           return;
         }
+        // Slaap alleen met toestemming voor de tekst die slaap noemt; anders wordt er geen slaap gelezen of verstuurd.
+        const sleepConsent = !settings.needsReconsent;
+        if (!perms.steps && !sleepConsent) {
+          // Alleen slaap mag gelezen worden, maar daarvoor is eerst opnieuw toestemming nodig.
+          failures++;
+          return;
+        }
         // Lang niet geopend: alle gemiste dagen meenemen (hooguit 30).
         const days = syncDaysSince(link.lastSyncAt, HEALTH_RESYNC_DAYS);
         // syncHealth ververst daarna zelf de activiteit en ranglijsten in de cache.
-        await syncHealth(userId, { days });
+        await syncHealth(userId, { days, sleepConsent });
         failures = 0;
       } catch {
         // Stil: geen verbinding, rechten ingetrokken of server weigert. Na 15 minuten (later een uur) opnieuw.
@@ -101,5 +116,7 @@ export function NativeHealthSync({ userId }: { userId: string }) {
     };
   }, [userId]);
 
-  return null;
+  return widget && userId ? <NativeWidgetSync userId={userId} /> : null;
 }
+
+const noopSubscribe = () => () => {};

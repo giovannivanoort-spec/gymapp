@@ -31,7 +31,11 @@ function firstExisting(paths) {
 // ─────────────── 1. Gezondheidsrechten in het manifest ───────────────
 
 /** Gezondheidsrechten die de app echt gebruikt. Moet gelijk zijn aan de Health apps-verklaring in de Play Console. */
-const KEEP_HEALTH = new Set(["android.permission.health.READ_STEPS", "android.permission.health.READ_ACTIVE_CALORIES_BURNED"]);
+const KEEP_HEALTH = new Set([
+  "android.permission.health.READ_STEPS",
+  "android.permission.health.READ_ACTIVE_CALORIES_BURNED",
+  "android.permission.health.READ_SLEEP",
+]);
 
 function healthPermissions(xml) {
   return [...xml.matchAll(/<uses-permission\b[^>]*>/g)]

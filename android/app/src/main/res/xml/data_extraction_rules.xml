@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+ (API 31): niets meenemen in de Google-back-up of bij overzetten naar een nieuwe telefoon.
+  Alle gegevens van Spotter staan in de database (Supabase); op het toestel staan alleen kopieën, waaronder
+  gezondheidsgegevens (AVG art. 9): stappen en slaap in de opslag van de WebView en de momentopname van
+  de widget (SharedPreferences spotter_widget.xml). Die mogen niet via een back-up op een ander toestel
+  terechtkomen of blijven bestaan nadat je ze in de app hebt verwijderd. Na het overzetten log je opnieuw in.
+  Android 11 en ouder: res/xml/backup_rules.xml (android:fullBackupContent).
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+    </device-transfer>
+</data-extraction-rules>

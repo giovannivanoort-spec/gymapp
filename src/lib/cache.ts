@@ -761,6 +761,40 @@ function purgeServiceWorkerData() {
   }
 }
 
+/**
+ * Gezondheidstabellen (stappen, kcal, slaap, toestemmingen). Gelijk aan het deel van PRIVATE_TABLE in
+ * public/sw.js dat hierover gaat. Een nieuwe service worker bewaart ze niet meer, maar een oudere
+ * (spotter-data-v3, actief tot "Herladen") kan ze nog in Cache Storage hebben staan.
+ */
+const HEALTH_TABLE = /\/rest\/v1\/(?:[a-z_]*sleep[a-z_]*|daily_[a-z_]*|activity_settings|activity_consent_log)(?:[/?]|$)/i;
+
+/**
+ * Wist alleen de gezondheidsgegevens uit de data-cache van de service worker (de rest, zoals de
+ * laatst geladen training, blijft offline beschikbaar). Na intrekken of verwijderen van activiteit
+ * of slaap: geen kopie op het toestel laten staan. Wacht niet.
+ */
+export function purgeServiceWorkerHealthData() {
+  try {
+    if (typeof caches === "undefined") return;
+    void caches
+      .keys()
+      .then((keys) =>
+        Promise.all(
+          keys
+            .filter((k) => k.startsWith(SW_DATA_CACHE_PREFIX))
+            .map(async (k) => {
+              const cache = await caches.open(k);
+              const reqs = await cache.keys();
+              await Promise.all(reqs.filter((r) => HEALTH_TABLE.test(new URL(r.url).pathname)).map((r) => cache.delete(r)));
+            }),
+        ),
+      )
+      .catch(() => {});
+  } catch {
+    // geen Cache Storage beschikbaar
+  }
+}
+
 /** Wist alles in IndexedDB (zonder te wachten). */
 function clearIdb() {
   idbIndex = new Map();

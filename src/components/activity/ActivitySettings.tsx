@@ -11,6 +11,8 @@ import { ChevronRightIcon, InfoIcon, LockIcon } from "@/components/Icons";
 import { LoadError } from "@/components/platform/LoadError";
 import { ConfirmSheet } from "@/components/social/ConfirmSheet";
 import { PhoneIcon, TrashIcon } from "@/components/social/icons";
+import { saveSleepSettings, sleepCoachAvailable, sleepCoachOn } from "@/components/sleep/settings";
+import { SleepSettingsSection } from "@/components/sleep/SleepSettingsSection";
 import { toast } from "@/components/ui/Toast";
 import {
   ACTIVITY_LIMITS,
@@ -43,7 +45,7 @@ export function ActivitySettings() {
   const [withdrawOpen, setWithdrawOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [entryOpen, setEntryOpen] = useState(false);
-  const [busy, setBusy] = useState<keyof ActivitySettingsPatch | null>(null);
+  const [busy, setBusy] = useState<keyof ActivitySettingsPatch | "coachSleep" | null>(null);
   const [goalDraft, setGoalDraft] = useState<number | null>(null);
   const goalTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const goalPending = useRef<number | null>(null);
@@ -95,6 +97,19 @@ export function ActivitySettings() {
         if (goalPending.current == null) setGoalDraft(null);
       }
     }, GOAL_SAVE_DELAY);
+  }
+
+  async function toggleCoachSleep(next: boolean) {
+    if (!userId || busy) return;
+    setBusy("coachSleep");
+    try {
+      await saveSleepSettings(userId, { coachSleep: next });
+      toast.success(next ? "De AI-coach kan nu ook je slaap gebruiken" : "De AI-coach gebruikt je slaap niet meer");
+    } catch (err) {
+      toast.error(activityErrorMessage(err));
+    } finally {
+      setBusy(null);
+    }
   }
 
   /** Health Connect op dit toestel ontkoppelen en een lopende sync laten aflopen, zodat die niets terugzet. */
@@ -161,8 +176,8 @@ export function ActivitySettings() {
           <div className="space-y-1">
             <p className="font-semibold">Activiteit bijhouden is nog niet ingeschakeld</p>
             <p className="text-xs text-muted">
-              Stappen en actieve kcal bijhouden, delen met vrienden en koppelen met Health Connect of Apple Health komen hier zodra
-              het is ingeschakeld.
+              Stappen, actieve kcal en slaap bijhouden, stappen delen met vrienden en koppelen met Health Connect of Apple Health
+              komen hier zodra het is ingeschakeld.
             </p>
           </div>
         </div>
@@ -201,8 +216,8 @@ export function ActivitySettings() {
             label="Activiteit bijhouden"
             description={
               consented
-                ? "Je dagelijkse stappen en actieve kcal worden opgeslagen. Uitzetten verwijdert direct al deze gegevens."
-                : "Sla per dag je stappen en actieve kcal op, om je stappendoel te volgen. Hiervoor vragen we eerst je toestemming."
+                ? "Je dagelijkse stappen, actieve kcal en slaap worden opgeslagen. Uitzetten verwijdert direct al deze gegevens."
+                : "Sla per dag je stappen en actieve kcal en per nacht je slaap op. Hiervoor vragen we eerst je toestemming."
             }
             on={consented}
             busy={busy === "store"}
@@ -214,8 +229,8 @@ export function ActivitySettings() {
             label="Delen met vrienden en groepsgenoten"
             description={
               <>
-                Je vrienden en groepsgenoten die zelf ook delen, zien dan je stappen per dag (niet je kcal). In een groep is dat ook je trainer.
-                Op de ranglijst staan alleen stappen. Staat standaard uit.
+                Je vrienden en groepsgenoten die zelf ook delen, zien dan je stappen per dag (niet je kcal en nooit je slaap). In een groep is
+                dat ook je trainer. Op de ranglijst staan alleen stappen. Staat standaard uit.
               </>
             }
             on={s.share_activity}
@@ -232,12 +247,27 @@ export function ActivitySettings() {
           <SwitchRow
             id={`${ids}-coach`}
             label="Gebruiken door de AI-coach"
-            description="Je activiteit wordt dan naar Anthropic (Claude) gestuurd om je vragen te beantwoorden. Staat standaard uit."
+            description="Je stappen en actieve kcal worden dan naar Anthropic (Claude) gestuurd om je vragen te beantwoorden. Staat standaard uit."
             on={s.coach_activity}
             busy={busy === "coach"}
             disabled={!consented || busy !== null}
             onToggle={() => patch({ coach: !s.coach_activity }, "coach")}
           />
+          {sleepCoachAvailable(s) && (
+            <SwitchRow
+              id={`${ids}-coach-sleep`}
+              label="Ook je slaap gebruiken door de AI-coach"
+              description={
+                s.needsReconsent
+                  ? "Geef eerst opnieuw toestemming (hierboven) om je slaap bij te houden."
+                  : "Je slaap per nacht gaat dan ook naar Anthropic (Claude), bijvoorbeeld voor vragen over herstel. Een aparte keuze; staat standaard uit."
+              }
+              on={sleepCoachOn(s)}
+              busy={busy === "coachSleep"}
+              disabled={!consented || s.needsReconsent || !s.coach_activity || busy !== null}
+              onToggle={() => toggleCoachSleep(!sleepCoachOn(s))}
+            />
+          )}
         </ul>
         {!consented && (
           <p className="flex items-center gap-1.5 pt-1 text-xs text-muted">
@@ -308,9 +338,18 @@ export function ActivitySettings() {
         </div>
       )}
 
+      {consented && (
+        <SleepSettingsSection
+          userId={userId}
+          settings={s}
+          onRequestConsent={() => requestConsent()}
+          healthLinked={healthLink.connected}
+        />
+      )}
+
       {/* Koppelingen met telefoon en horloge */}
       <div className="card divide-y divide-line p-0">
-        <HealthConnectPanel userId={userId} consented={consented} onRequestConsent={requestConsent} />
+        <HealthConnectPanel userId={userId} consented={consented} needsReconsent={s.needsReconsent} onRequestConsent={requestConsent} />
         <div className="flex min-h-12 items-center gap-3 px-4 py-3">
           <PhoneIcon size={18} className="shrink-0 text-muted" />
           <div className="min-w-0 flex-1">
@@ -359,8 +398,8 @@ export function ActivitySettings() {
         title="Activiteit bijhouden uitzetten"
         body={
           <>
-            <span className="font-semibold text-ink">Al je stappen- en caloriegegevens worden direct verwijderd.</span> Delen met vrienden,
-            de AI-coach en calorieën terugverdienen gaan ook uit. Je kunt later opnieuw toestemming geven.
+            <span className="font-semibold text-ink">Al je stappen-, calorie- en slaapgegevens worden direct verwijderd.</span> Delen met
+            vrienden, de AI-coach en calorieën terugverdienen gaan ook uit. Je kunt later opnieuw toestemming geven.
           </>
         }
         confirmLabel="Uitzetten en verwijderen"
@@ -375,8 +414,8 @@ export function ActivitySettings() {
         title="Activiteitsgegevens verwijderen"
         body={
           <>
-            <span className="font-semibold text-ink">Al je opgeslagen stappen en actieve kcal worden definitief verwijderd</span>, van
-            alle dagen en bronnen. Activiteit bijhouden blijft aan; zet het uit als je ook wilt stoppen met bijhouden.
+            <span className="font-semibold text-ink">Al je opgeslagen stappen, actieve kcal en slaap worden definitief verwijderd</span>,
+            van alle dagen, nachten en bronnen. Activiteit bijhouden blijft aan; zet het uit als je ook wilt stoppen met bijhouden.
             {healthLink.connected && " Health Connect wordt op dit toestel ontkoppeld, zodat de gegevens niet meteen terugkomen."}
           </>
         }

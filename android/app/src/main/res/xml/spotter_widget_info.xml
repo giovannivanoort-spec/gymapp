@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Widget "Spotter" (SpotterWidgetProvider). Standaard 2x2, uit te rekken tot 4x2 en groter
+  (vanaf 250dp breed de brede indeling).
+  updatePeriodMillis = 0: de widget haalt zelf niets op; nieuwe gegevens komen alleen uit de app
+  (SpotterWidgetPlugin). Na middernacht tekent een niet-wekkend alarm hem opnieuw.
+-->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/widget_description"
+    android:initialLayout="@layout/widget_placeholder"
+    android:minWidth="110dp"
+    android:minHeight="110dp"
+    android:minResizeWidth="110dp"
+    android:minResizeHeight="100dp"
+    android:previewImage="@drawable/widget_preview_image"
+    android:previewLayout="@layout/widget_preview"
+    android:resizeMode="horizontal|vertical"
+    android:targetCellWidth="2"
+    android:targetCellHeight="2"
+    android:updatePeriodMillis="0"
+    android:widgetCategory="home_screen" />

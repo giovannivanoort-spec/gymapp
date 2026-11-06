@@ -2,4 +2,12 @@
 <resources>
     <!-- Achtergrond van Spotter (gelijk aan APP_BG in src/lib/brand.ts). -->
     <color name="spotter_bg">#0b0d10</color>
+
+    <!-- Widget op het startscherm (tokens uit src/app/globals.css). -->
+    <color name="widget_bg">#0b0d10</color>
+    <color name="widget_line">#2a2f37</color>
+    <color name="widget_track">#1d2128</color>
+    <color name="widget_ink">#eceef1</color>
+    <color name="widget_muted">#9aa1ab</color>
+    <color name="widget_accent">#c8f53a</color>
 </resources>

@@ -806,6 +806,97 @@ export const TOOLS = [
   }),
 
   tool({
+    name: "get_sleep",
+    description:
+      "Slaap per nacht van de gebruiker zelf (van telefoon/horloge via Health Connect of Apple Health, of handmatig ingevoerd), plus zijn slaapdoel. " +
+      "De datum is de dag waarop hij wakker werd. Slaapfases van horloges zijn schattingen. " +
+      "Werkt alleen als de gebruiker activiteit én slaap apart met de coach deelt (Profiel → Koppelingen).",
+    schema: z.object({
+      days: z.number().int().min(1).max(60).optional().describe("Aantal nachten terug (inclusief afgelopen nacht), standaard 14"),
+    }),
+    run: async ({ days = 14 }, { sb, userId }) => {
+      const missing = (e: { code?: string; message?: string }) =>
+        ["42P01", "42703", "42883", "PGRST202", "PGRST204", "PGRST205"].includes(e.code ?? "") || /does not exist|schema cache/i.test(e.message ?? "");
+      // Zelfde poort als get_activity, plus de aparte keuze voor slaap (upgrade-sleep-settings.sql) en een
+      // toestemming voor de tekst die slaap noemt (v1 was van vóór slaap).
+      const { data: settings, error: settingsError } = await sb
+        .from("activity_settings")
+        .select("health_consent_at, consent_version, coach_activity, coach_sleep, sleep_goal_minutes")
+        .eq("user_id", userId)
+        .maybeSingle();
+      if (settingsError) {
+        if (missing(settingsError)) return { error: "Slaap delen met de coach is in deze app nog niet ingeschakeld." };
+        return { error: dbMessage(settingsError) };
+      }
+      const s = settings as {
+        health_consent_at: string | null;
+        consent_version: string | null;
+        coach_activity: boolean;
+        coach_sleep: boolean;
+        sleep_goal_minutes: number | null;
+      } | null;
+      if (!s?.health_consent_at || !s.consent_version || s.consent_version === "activiteit-v1-2026-11" || !s.coach_activity || !s.coach_sleep) {
+        return { error: "De gebruiker heeft zijn slaap niet gedeeld met de coach (Profiel → Koppelingen → Ook je slaap gebruiken door de AI-coach)." };
+      }
+      const since = daysAgo(days - 1);
+      const { data, error } = await sb
+        .from("daily_sleep_effective")
+        .select("date, source, asleep_minutes, in_bed_minutes, bedtime, wake_time, deep_minutes, light_minutes, rem_minutes, awake_minutes")
+        // Alleen de eigen slaap (RLS staat ook niets anders toe).
+        .eq("user_id", userId)
+        .gte("date", since)
+        .order("date")
+        .limit(100);
+      if (error) {
+        if (missing(error)) return { error: "Slaap bijhouden is in deze app nog niet ingeschakeld." };
+        return { error: dbMessage(error) };
+      }
+      type Row = {
+        date: string;
+        source: string;
+        asleep_minutes: number;
+        in_bed_minutes: number | null;
+        bedtime: string | null;
+        wake_time: string | null;
+        deep_minutes: number | null;
+        light_minutes: number | null;
+        rem_minutes: number | null;
+        awake_minutes: number | null;
+      };
+      const SOURCE: Record<string, string> = { manual: "handmatig", health_connect: "Health Connect", healthkit: "Apple Health" };
+      const clock = (iso: string | null) =>
+        iso ? new Date(iso).toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Amsterdam" }) : null;
+      const num = (v: number | null) => (v == null ? null : Number(v));
+      const goal = Number(s.sleep_goal_minutes) || 480;
+      const nights = ((data ?? []) as Row[]).map((r) => {
+        const hasStages = r.deep_minutes != null || r.light_minutes != null || r.rem_minutes != null;
+        return {
+          date: r.date,
+          asleep_minutes: Number(r.asleep_minutes),
+          in_bed_minutes: num(r.in_bed_minutes),
+          bedtime: clock(r.bedtime),
+          wake_time: clock(r.wake_time),
+          ...(hasStages && {
+            stages_minutes: { deep: num(r.deep_minutes), light: num(r.light_minutes), rem: num(r.rem_minutes), awake: num(r.awake_minutes) },
+          }),
+          source: SOURCE[r.source] ?? r.source,
+        };
+      });
+      const withSleep = nights.filter((n) => n.asleep_minutes > 0);
+      const total = withSleep.reduce((a, n) => a + n.asleep_minutes, 0);
+      return {
+        sleep_goal_minutes: goal,
+        period: { from: since, nights: days },
+        nights_with_data: withSleep.length,
+        avg_asleep_minutes: withSleep.length ? Math.round(total / withSleep.length) : null,
+        nights_goal_met: withSleep.filter((n) => n.asleep_minutes >= goal).length,
+        note: "Datum = dag van wakker worden. Tijden in Nederlandse tijd. Nachten zonder data ontbreken (niet als nul tellen). Slaapfases zijn schattingen van het horloge.",
+        nights,
+      };
+    },
+  }),
+
+  tool({
     name: "get_group_check",
     description:
       "Groepscheck voor de trainer: per lid het aantal trainingen, gemiste groepstrainingen, de laatste training en " +

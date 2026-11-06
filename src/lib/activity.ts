@@ -19,7 +19,7 @@
  * Cache-sleutels (lib/cache) — alles begint met "activity:"
  * - activitySettingsKey(userId), activityRangeKey(userId, from, to), leaderboardKey(scope, userId, weekFrom)
  * - invalidateActivity(userId?) — na elke wijziging; zonder userId alles.
- * - forgetActivityData(userId) — dagen en ranglijsten ook van het toestel wissen (na intrekken of verwijderen).
+ * - forgetActivityData(userId) — dagen, slaap en ranglijsten ook van het toestel wissen (na intrekken of verwijderen).
  *
  * Lezen
  * - fetchActivitySettings(userId) → ActivitySettingsState (standaardwaarden als er nog geen rij is).
@@ -39,7 +39,7 @@
  * - upsertDailyActivity(source, days) → aantal opgeslagen dagen (ENIGE schrijfroute; "manual" en, na
  *   supabase/upgrade-activity-native.sql, ook "health_connect" en "healthkit" uit de apps; zie lib/native/health.ts)
  * - saveManualActivity(userId, { date, steps, active_kcal }) / clearManualActivity(userId, date)
- * - deleteAllActivity(userId) → al je dagen wissen (toestemming blijft staan)
+ * - deleteAllActivity(userId) → al je dagen wissen, ook je slaap (toestemming blijft staan)
  * - validateManualEntry(entry) → Nederlandse foutmelding of null (zelfde grenzen als de server)
  * - manualEntryDates(now?) → de 7 kiesbare datums (vandaag eerst)
  *
@@ -51,7 +51,7 @@
  * - isActivityUnavailable(err), activityErrorMessage(err)
  */
 
-import { invalidate, removeCached, setCached, useCachedState, type CachedState } from "./cache";
+import { invalidate, purgeServiceWorkerHealthData, removeCached, setCached, useCachedState, type CachedState } from "./cache";
 import { toISODate } from "./dates";
 import { errorMessage, isMissingSchemaError, supabase } from "./supabase";
 import { PUBLIC_PROFILE_COLUMNS, PUBLIC_PROFILE_COLUMNS_NO_PHOTO, type PublicProfile } from "./types";
@@ -124,8 +124,13 @@ export type ActivitySettingsPatch = {
   burnCreditPct?: number;
 };
 
-/** Versie van de toestemmingstekst; gelijk aan v_version in save_activity_settings. Samen ophogen. */
-export const ACTIVITY_CONSENT_VERSION = "activiteit-v1-2026-11";
+/**
+ * Versie van de toestemmingstekst die deze app toont; gaat mee naar give_activity_consent (upgrade-sleep.sql),
+ * die alleen bekende versies accepteert. Een nieuwe versie: daar aan de lijst toevoegen.
+ * v2 (upgrade-sleep.sql): de tekst noemt nu ook slaap. Wie voor v1 toestemming gaf, krijgt needsReconsent;
+ * de server slaat pas slaap op na toestemming voor v2 of later (stappen blijven gewoon werken).
+ */
+export const ACTIVITY_CONSENT_VERSION = "activiteit-v2-2026-11";
 export const DEFAULT_STEP_GOAL = 7000;
 /** Vaste grens voor "dagen gehaald" op de ranglijst (andermans stappendoel is privé). */
 export const LEADERBOARD_DAY_GOAL = 7000;
@@ -203,6 +208,11 @@ export const leaderboardKey = (s: LeaderboardScope, userId: string, weekFrom: st
 export function forgetActivityData(userId: string) {
   removeCached(`activity:days:${userId}:`);
   removeCached("activity:board:");
+  // Slaap valt onder dezelfde toestemming (lib/sleep.ts, sleepRangeKey). Hier als tekst, zodat dit
+  // bestand lib/sleep.ts niet hoeft te importeren (die importeert dit bestand al).
+  removeCached(`sleep:days:${userId}:`);
+  // Ook een kopie in Cache Storage (oudere service worker) mag niet achterblijven.
+  purgeServiceWorkerHealthData();
 }
 
 /** Na een wijziging: alles van activiteit (of alleen van deze gebruiker + ranglijsten) opnieuw ophalen. */
@@ -283,8 +293,17 @@ export async function fetchWeekSteps(userIds: string[], from: string, to: string
 
 /** Instellingen of toestemmingen wijzigen (alleen via de server-functie). Werkt de cache direct bij. */
 export async function saveActivitySettings(userId: string, patch: ActivitySettingsPatch): Promise<ActivitySettingsState> {
+  // Toestemming geven: met de versie van de tekst die deze app toont (give_activity_consent, upgrade-sleep.sql),
+  // zodat het bewijs van toestemming klopt, ook als site en database even niet gelijk lopen. Bestaat die
+  // functie nog niet, dan de oude route (de server slaat dan zijn eigen versie op).
+  let store = patch.store ?? null;
+  if (store === true) {
+    const given = await supabase.rpc("give_activity_consent", { p_version: ACTIVITY_CONSENT_VERSION });
+    if (!given.error) store = null;
+    else if (!isMissingSchemaError(given.error)) rethrow(given.error);
+  }
   const { data, error } = await supabase.rpc("save_activity_settings", {
-    p_store: patch.store ?? null,
+    p_store: store,
     p_share: patch.share ?? null,
     p_coach: patch.coach ?? null,
     p_step_goal: patch.stepGoal ?? null,
@@ -302,6 +321,8 @@ export async function saveActivitySettings(userId: string, patch: ActivitySettin
     // Delen verandert de ranglijsten.
     invalidate(`activity:days:${userId}:`);
     invalidate("activity:board:");
+    // (Opnieuw) toestemming: slaap kan nu wel worden opgeslagen (lib/sleep.ts).
+    if (patch.store) invalidate(`sleep:days:${userId}:`);
   }
   return state;
 }
@@ -339,12 +360,18 @@ export async function upsertDailyActivity(source: ActivitySource, days: DailyAct
 }
 
 /**
- * Al je opgeslagen activiteit verwijderen (alle bronnen en dagen). De toestemming blijft staan;
+ * Al je opgeslagen activiteit verwijderen (alle bronnen en dagen), inclusief je slaap (daily_sleep,
+ * upgrade-sleep.sql; ontbreekt die tabel nog, dan alleen activiteit). De toestemming blijft staan;
  * voor stoppen met bijhouden: saveActivitySettings(userId, { store: false }).
  */
 export async function deleteAllActivity(userId: string): Promise<void> {
   const { error } = await supabase.from("daily_activity").delete().eq("user_id", userId);
   if (error) rethrow(error);
+  const sleep = await supabase.from("daily_sleep").delete().eq("user_id", userId);
+  if (sleep.error && !isMissingSchemaError(sleep.error)) {
+    forgetActivityData(userId);
+    throw sleep.error;
+  }
   forgetActivityData(userId);
 }
 

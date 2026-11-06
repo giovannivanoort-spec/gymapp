@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Widget: hoekstraal (Android 12+: die van het systeem, zie values-v31) en binnenmarge. -->
+    <dimen name="widget_radius">20dp</dimen>
+    <dimen name="widget_padding">12dp</dimen>
+</resources>

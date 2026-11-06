@@ -65,13 +65,13 @@ export function ConsentSheet({
       <div className="space-y-4 text-sm">
         {reconsent ? (
           <p className="text-muted">
-            De uitleg over wat we met je activiteit doen, is gewijzigd. Lees hem opnieuw en geef opnieuw toestemming. Je gegevens
-            blijven gewoon staan.
+            De uitleg over wat we met je activiteit doen, is gewijzigd: we houden nu ook je slaap bij. Lees hem opnieuw en geef
+            opnieuw toestemming. Je gegevens blijven gewoon staan.
           </p>
         ) : (
           <p className="text-muted">
-            Houd je dagelijkse stappen bij, handmatig of later automatisch via de Android- of iPhone-app. Daarvoor vragen we eerst je
-            toestemming.
+            Houd je dagelijkse stappen en je slaap bij, handmatig of automatisch via de Android-app (later ook de iPhone-app).
+            Daarvoor vragen we eerst je toestemming.
           </p>
         )}
 
@@ -79,28 +79,31 @@ export function ConsentSheet({
           <div>
             <dt className="font-semibold">Wat we opslaan</dt>
             <dd className="text-muted">
-              Per dag je totaal aantal stappen en actieve kcal, en waar ze vandaan komen (handmatig of de naam van de app). Geen
-              locaties, hartslag of losse metingen.
+              Per dag je totaal aantal stappen en actieve kcal. Per nacht hoe lang je sliep, je bedtijd en wektijd en, als je
+              horloge dat meet, je slaapfases. Steeds met de bron (handmatig of de naam van de app). Geen locaties, hartslag of
+              losse metingen.
             </dd>
           </div>
           <div>
             <dt className="font-semibold">Waarvoor</dt>
             <dd className="text-muted">
-              Om je stappen en je voortgang naar je stappendoel te tonen. Delen met vrienden, gebruik door de AI-coach en
-              calorieën terugverdienen zet je los aan; dat staat standaard uit.
+              Om je stappen, je voortgang naar je stappendoel en je slaap te tonen. Delen met vrienden, gebruik door de AI-coach
+              en calorieën terugverdienen zet je los aan; dat staat standaard uit. Je slaap deel je nooit met vrienden of groepen; de
+              AI-coach ziet hem alleen als je dat apart aanzet.
             </dd>
           </div>
           <div>
             <dt className="font-semibold">Gezondheidsgegevens</dt>
             <dd className="text-muted">
-              Stappen en verbrande calorieën gelden als gezondheidsgegevens. Daarom slaan we ze alleen op met jouw uitdrukkelijke
-              toestemming.
+              Stappen, verbrande calorieën en slaap gelden als gezondheidsgegevens. Daarom slaan we ze alleen op met jouw
+              uitdrukkelijke toestemming.
             </dd>
           </div>
           <div>
             <dt className="font-semibold">Intrekken</dt>
             <dd className="text-muted">
-              Dat kan altijd in Profiel, onder Koppelingen. Al je stappen- en caloriegegevens worden dan direct verwijderd.
+              Dat kan altijd in Profiel, onder Koppelingen. Al je stappen-, calorie- en slaapgegevens worden dan direct
+              verwijderd.
             </dd>
           </div>
         </dl>
@@ -122,8 +125,8 @@ export function ConsentSheet({
             disabled={busy}
           />
           <span>
-            Ik geef toestemming om mijn dagelijkse stappen en actieve kcal (gezondheidsgegevens) op te slaan voor de doeleinden
-            hierboven.
+            Ik geef toestemming om mijn dagelijkse stappen, actieve kcal en slaap (gezondheidsgegevens) op te slaan voor de
+            doeleinden hierboven.
           </span>
         </label>
 

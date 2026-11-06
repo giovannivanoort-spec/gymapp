@@ -7,9 +7,9 @@
 // - spotter-pages-v2: pagina's (HTML/RSC). Netwerk eerst, met cache als terugval; bij zwak bereik
 //   (sportschool-wifi, kelder) wacht een pagina maximaal ~3,5 s op het netwerk als er een bewaarde
 //   versie is, het netwerkantwoord werkt de cache daarna alsnog bij.
-// - spotter-data-v3: GET-antwoorden van Supabase (/rest/v1), zodat je de laatst geladen training
-//   offline kunt zien. Per gebruiker gesleuteld (uit het login-token), privédata zoals voeding en
-//   coachgesprekken wordt nooit bewaard, en alles wordt gewist bij uitloggen ("clear-data").
+// - spotter-data-v4: GET-antwoorden van Supabase (/rest/v1), zodat je de laatst geladen training
+//   offline kunt zien. Per gebruiker gesleuteld (uit het login-token), privédata zoals voeding,
+//   coachgesprekken en gezondheidsgegevens (stappen, kcal, slaap) wordt nooit bewaard, en alles wordt gewist bij uitloggen ("clear-data").
 //   Alleen als het netwerk echt faalt komt de bewaarde kopie terug, gemarkeerd met de header
 //   `x-sw-cache: hit` (en `x-sw-cached-at`). De app slaat zo'n kopie dan niet op als verse data en
 //   toont eerlijk dat je offline bent. Geen time-out-race: een trage maar werkende verbinding geeft
@@ -27,7 +27,8 @@ const SW_VERSION = new URL(self.location.href).searchParams.get("v") || VERSION;
 const STATIC_CACHE = "spotter-static-v2";
 const PAGES_CACHE = "spotter-pages-v2";
 // v3: zonder geschiedenis en privé-profielkolommen (v2 wordt bij activeren opgeruimd).
-const DATA_CACHE = "spotter-data-v3";
+// v4: zonder gezondheidsgegevens (daily_activity, daily_sleep, activity_settings); v3 kon die nog bevatten.
+const DATA_CACHE = "spotter-data-v4";
 const KEEP = [STATIC_CACHE, PAGES_CACHE, DATA_CACHE];
 
 const OFFLINE_URL = "/offline.html";
@@ -41,7 +42,9 @@ const MAX_DATA_BYTES = 12 * 1024 * 1024;
 const MAX_DATA_ITEM_BYTES = 1.5 * 1024 * 1024;
 
 // Privétabellen: nooit in Cache Storage (voeding blijft privé, ook op een gedeeld toestel).
-const PRIVATE_TABLE = /\/rest\/v1\/(?:[a-z_]*(?:food|meal|nutrition|water|macro|coach|diet)[a-z_]*|ai_usage|push_subscriptions|notification_prefs|push_log)(?:[/?]|$)/i;
+// Gezondheidsgegevens (AVG art. 9: stappen, kcal, slaap en de toestemmingen daarvoor) ook niet: die moeten
+// na intrekken of verwijderen direct van het toestel verdwijnen. Gelijk aan HEALTH_TABLE in src/lib/cache.ts.
+const PRIVATE_TABLE = /\/rest\/v1\/(?:[a-z_]*(?:food|meal|nutrition|water|macro|coach|diet|sleep)[a-z_]*|daily_[a-z_]*|activity_settings|activity_consent_log|ai_usage|push_subscriptions|notification_prefs|push_log)(?:[/?]|$)/i;
 
 // Kolommen met voedingsdoelen in profiles: zo'n antwoord niet bewaren.
 const PRIVATE_PROFILE_COLUMNS = /(?:^|[,(])\s*(?:\*|kcal_target|protein_target|carbs_target|fat_target|nutrition_goal|activity_level)\s*(?:[,)]|$)/;

@@ -361,10 +361,45 @@ function wellFormedTail(tail: Row[]) {
 }
 
 /**
- * Opgeslagen bericht terug naar de vorm voor de API. Extra velden die de app zelf bijhoudt
- * (handtekening, "klaargezet" op een voorstel) gaan niet mee.
+ * Tools die gezondheidsgegevens teruggeven (AVG art. 9: stappen, kcal, slaap). Hun uitkomst gaat alleen
+ * mee in het antwoord waarin de tool draait en wordt NIET in coach_messages bewaard: anders zou een oud
+ * gesprek die gegevens bij elke volgende vraag opnieuw naar Anthropic sturen, ook nadat de gebruiker
+ * "Gebruiken door de AI-coach" (of slaap voor de coach) heeft uitgezet of zijn toestemming heeft
+ * ingetrokken, en zouden ze in het gesprek blijven staan nadat alles "direct verwijderd" is.
+ * Rijen van vóór deze regel worden bij het terugsturen ook afgeschermd (toParams) en in de database
+ * opgeschoond bij intrekken (supabase/upgrade-health-coach-redact.sql).
  */
-function toParam(row: Row): Param {
+const HEALTH_TOOLS = new Set(["get_activity", "get_sleep"]);
+const HEALTH_REDACTED =
+  "Gegevens niet bewaard: gezondheidsgegevens worden alleen gebruikt in het antwoord waarin ze zijn opgehaald. Roep de tool opnieuw aan als je ze weer nodig hebt.";
+
+/** Tool-resultaten zoals ze worden opgeslagen: uitkomsten van gezondheidstools vervangen door een melding. */
+function storableResults<T extends { tool_use_id: string; content: string; is_error?: boolean }>(
+  results: T[],
+  toolUses: { id: string; name: string }[],
+): T[] {
+  const health = new Set(toolUses.filter((tu) => HEALTH_TOOLS.has(tu.name)).map((tu) => tu.id));
+  return results.map((r) => (health.has(r.tool_use_id) && !r.is_error ? { ...r, content: HEALTH_REDACTED } : r));
+}
+
+/** Opgeslagen berichten terug naar de vorm voor de API (zie toParam), met gezondheidsuitkomsten afgeschermd. */
+function toParams(rows: Row[]): Param[] {
+  const healthIds = new Set<string>();
+  for (const r of rows) {
+    if (r.kind !== "assistant" || !Array.isArray(r.content)) continue;
+    for (const b of r.content as { type?: string; id?: string; name?: string }[]) {
+      if (b.type === "tool_use" && b.id && b.name && HEALTH_TOOLS.has(b.name)) healthIds.add(b.id);
+    }
+  }
+  return rows.map((r) => toParam(r, healthIds));
+}
+
+/**
+ * Opgeslagen bericht terug naar de vorm voor de API. Extra velden die de app zelf bijhoudt
+ * (handtekening, "klaargezet" op een voorstel) gaan niet mee. Uitkomsten van tools in `healthIds`
+ * (gezondheidsgegevens, zie HEALTH_TOOLS) gaan nooit opnieuw mee.
+ */
+function toParam(row: Row, healthIds: ReadonlySet<string> = new Set()): Param {
   const blocks = Array.isArray(row.content) ? (row.content as Record<string, unknown>[]) : [];
   if (row.kind === "text") {
     return {
@@ -382,7 +417,7 @@ function toParam(row: Row): Param {
         .map((b) => ({
           type: "tool_result" as const,
           tool_use_id: b.tool_use_id as string,
-          content: b.content as string,
+          content: healthIds.has(b.tool_use_id as string) && b.is_error !== true ? HEALTH_REDACTED : (b.content as string),
           ...(typeof b.is_error === "boolean" && { is_error: b.is_error }),
         })),
     };
@@ -542,7 +577,8 @@ export async function POST(req: Request) {
     const convId = conversationId;
 
     // De inhoud komt precies zo uit de database als hij eerder naar/van de API ging.
-    const messages = rows.map(toParam);
+    // Uitkomsten van gezondheidstools gaan niet opnieuw mee (zie HEALTH_TOOLS).
+    const messages = toParams(rows);
     const groups: ContextGroup[] = (memberships.data ?? [])
       .map((m) => {
         const g = m.groups as unknown as { id: string; name: string } | null;
@@ -809,8 +845,9 @@ function startAnswer({
             };
           }),
         );
+        // De coach ziet de volledige uitkomst in dit antwoord; opgeslagen wordt hij zonder gezondheidsgegevens.
         messages.push({ role: "user", content: results });
-        await save(sb, convId, "user", "tool_results", results);
+        await save(sb, convId, "user", "tool_results", storableResults(results, toolUses));
         round++;
       }
 
