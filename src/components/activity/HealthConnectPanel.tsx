@@ -5,6 +5,7 @@ import { AlertIcon, ChevronRightIcon, ExternalIcon, RefreshIcon } from "@/compon
 import { PhoneIcon } from "@/components/social/icons";
 import { toast } from "@/components/ui/Toast";
 import { APP_NAME } from "@/lib/brand";
+import { appLabel } from "@/lib/activity";
 import { relativeDay, timeAgo } from "@/lib/dates";
 import {
   disconnectHealth,
@@ -41,7 +42,7 @@ const fmtDays = (n: number) => (n === 1 ? "1 dag" : `${n} dagen`);
 const fmtInt = (n: number) => n.toLocaleString("nl-NL");
 
 /** Wat Health Connect bij de laatste sync teruggaf, zodat je kunt zien of er wel data binnenkomt. */
-function SyncPreview({ preview }: { preview: { date: string; steps: number | null; kcal: number | null }[] }) {
+function SyncPreview({ preview }: { preview: { date: string; steps: number | null; kcal: number | null; app?: string | null }[] }) {
   if (!preview.length) return null;
   const noSteps = preview.every((d) => d.steps == null || d.steps === 0);
   return (
@@ -50,7 +51,10 @@ function SyncPreview({ preview }: { preview: { date: string; steps: number | nul
       <ul className="divide-y divide-line rounded-xl bg-surface-2">
         {preview.map((d) => (
           <li key={d.date} className="flex items-center justify-between gap-3 px-3 py-2">
-            <span>{relativeDay(d.date)}</span>
+            <span>
+              {relativeDay(d.date)}
+              {d.app ? <span className="text-muted"> · {appLabel(d.app)}</span> : null}
+            </span>
             <span className="tabular-nums text-ink">
               {d.steps != null ? `${fmtInt(d.steps)} stappen` : "geen stappen"}
               {d.kcal != null ? <span className="text-muted"> · {fmtInt(d.kcal)} kcal</span> : null}

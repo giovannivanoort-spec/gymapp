@@ -188,11 +188,16 @@ export type HealthLink = {
   lastSyncDays: number;
   /** Wat Health Connect bij de laatste sync teruggaf voor de laatste 3 dagen (nieuwste eerst), om te kunnen controleren. */
   lastSyncPreview: HealthDayPreview[];
+  /** Versie van de telmethode bij de laatste sync; ouder dan SYNC_METHOD = eenmalig 30 dagen opnieuw ophalen. */
+  method: number;
 };
 
-export type HealthDayPreview = { date: string; steps: number | null; kcal: number | null };
+/** 2: per dag de app met de meeste stappen (geen som over apps). Ophogen = iedereen haalt 30 dagen opnieuw op. */
+const SYNC_METHOD = 2;
 
-const EMPTY_LINK: HealthLink = { connected: false, connectedAt: null, lastSyncAt: null, lastSyncDays: 0, lastSyncPreview: [] };
+export type HealthDayPreview = { date: string; steps: number | null; kcal: number | null; /** Pakketnaam van de app waar de stappen vandaan komen. */ app?: string | null };
+
+const EMPTY_LINK: HealthLink = { connected: false, connectedAt: null, lastSyncAt: null, lastSyncDays: 0, lastSyncPreview: [], method: 0 };
 
 function parsePreview(v: unknown): HealthDayPreview[] {
   if (!Array.isArray(v)) return [];
@@ -200,7 +205,7 @@ function parsePreview(v: unknown): HealthDayPreview[] {
   return v
     .filter((d): d is Record<string, unknown> => !!d && typeof d === "object" && typeof (d as { date?: unknown }).date === "string")
     .slice(0, 3)
-    .map((d) => ({ date: d.date as string, steps: num(d.steps), kcal: num(d.kcal) }));
+    .map((d) => ({ date: d.date as string, steps: num(d.steps), kcal: num(d.kcal), app: typeof d.app === "string" ? d.app : null }));
 }
 const LINK_EVENT = "spotter:health-link";
 const linkKey = (userId: string) => `spotter:health-connect:${userId}`;
@@ -223,6 +228,7 @@ function parseLink(raw: string | null): HealthLink {
       lastSyncAt: typeof v.lastSyncAt === "string" ? v.lastSyncAt : null,
       lastSyncDays: Number(v.lastSyncDays) || 0,
       lastSyncPreview: parsePreview(v.lastSyncPreview),
+      method: Number(v.method) || 0,
     };
   } catch {
     return EMPTY_LINK;
@@ -354,6 +360,58 @@ async function dailySums(dataType: "steps" | "calories", days: DayRange[]): Prom
   return sums;
 }
 
+type DayBest = { value: number; app: string | null };
+
+/** Maximaal aantal losse metingen per sync; daarboven terugvallen op de dagtotalen van Health Connect. */
+const MAX_RECORDS = 100_000;
+
+/**
+ * Per lokale dag het totaal van de app met het hoogste totaal (bijv. Samsung Health of Garmin Connect),
+ * in plaats van de som over alle apps. Waarom: op Android 14+ telt Health Connect ook zelf stappen van
+ * de telefoon, en Samsung Health of een horloge-app schrijft daarnaast zijn eigen dagtelling (waar de
+ * telefoonstappen al in zitten). Het dagtotaal van Health Connect telde die in de praktijk dubbel,
+ * ondanks de app-prioriteit. Apps worden hier dus nooit bij elkaar opgeteld.
+ * Lukt het lezen van losse metingen niet (te veel data, fout), dan het dagtotaal van Health Connect.
+ */
+async function dailyBest(dataType: "steps" | "calories", days: DayRange[]): Promise<Map<string, DayBest>> {
+  const { Health } = await withTimeout(healthPlugin(), 15_000, "laden");
+  const first = days[0];
+  const last = days[days.length - 1];
+  try {
+    const { samples } = await withTimeout(
+      Health.readSamples({
+        dataType,
+        startDate: first.start.toISOString(),
+        endDate: last.end.toISOString(),
+        limit: MAX_RECORDS,
+        ascending: true,
+      }),
+      60_000,
+      "metingen ophalen",
+    );
+    if ((samples?.length ?? 0) >= MAX_RECORDS) throw new Error("te veel metingen");
+    const perDay = new Map<string, Map<string, number>>();
+    for (const r of samples ?? []) {
+      if (typeof r.value !== "number" || !Number.isFinite(r.value)) continue;
+      const date = toISODate(new Date(r.startDate));
+      const app = r.sourceId || r.sourceName || "onbekend";
+      const byApp = perDay.get(date) ?? new Map<string, number>();
+      byApp.set(app, (byApp.get(app) ?? 0) + r.value);
+      perDay.set(date, byApp);
+    }
+    const out = new Map<string, DayBest>();
+    for (const [date, byApp] of perDay) {
+      let best: DayBest | null = null;
+      for (const [app, value] of byApp) if (!best || value > best.value) best = { value, app };
+      if (best) out.set(date, best);
+    }
+    return out;
+  } catch {
+    const sums = await dailySums(dataType, days);
+    return new Map([...sums].map(([date, value]) => [date, { value, app: null }]));
+  }
+}
+
 function bounded(v: number | undefined, lim: { min: number; max: number }): number | null {
   if (v == null || !Number.isFinite(v)) return null;
   const n = Math.round(v);
@@ -393,29 +451,34 @@ export function healthSyncInFlight(): Promise<HealthSyncResult> | null {
 export function syncHealth(userId: string, { days = HEALTH_SYNC_DAYS }: { days?: number } = {}): Promise<HealthSyncResult> {
   if (running) return running;
   const job = (async () => {
-    const n = Math.max(1, Math.min(HEALTH_FIRST_SYNC_DAYS, Math.round(days)));
+    // Na een nieuwe telmethode eenmalig alle 30 dagen opnieuw, zodat oude (dubbel getelde) dagen overschreven worden.
+    const want = getHealthLink(userId).method < SYNC_METHOD ? HEALTH_FIRST_SYNC_DAYS : days;
+    const n = Math.max(1, Math.min(HEALTH_FIRST_SYNC_DAYS, Math.round(want)));
     const range = localDays(n);
     const perms = await healthPermissions();
     if (!perms.steps) throw new Error("Spotter mag je stappen niet lezen. Geef toestemming in Health Connect.");
 
-    const steps = await dailySums("steps", range);
-    let kcal = new Map<string, number>();
+    const steps = await dailyBest("steps", range);
+    let kcal = new Map<string, DayBest>();
     if (perms.calories) {
       try {
-        kcal = await dailySums("calories", range);
+        kcal = await dailyBest("calories", range);
       } catch {
         // Eén keer opnieuw (tijdelijke fout); mislukt het weer, dan gooit dit en mislukt de sync.
         await new Promise((r) => setTimeout(r, 1500));
-        kcal = await dailySums("calories", range);
+        kcal = await dailyBest("calories", range);
       }
     }
 
     const payload: DailyActivityPayload[] = [];
     for (const d of range) {
-      const s = bounded(steps.get(d.date), ACTIVITY_LIMITS.steps);
-      const k = bounded(kcal.get(d.date), ACTIVITY_LIMITS.activeKcal);
+      const st = steps.get(d.date);
+      const kc = kcal.get(d.date);
+      const s = bounded(st?.value, ACTIVITY_LIMITS.steps);
+      const k = bounded(kc?.value, ACTIVITY_LIMITS.activeKcal);
       if (s == null && k == null) continue;
-      payload.push({ date: d.date, steps: s, active_kcal: k });
+      const apps = [...new Set([s != null ? st?.app : null, k != null ? kc?.app : null].filter((a): a is string => !!a))];
+      payload.push({ date: d.date, steps: s, active_kcal: k, ...(apps.length ? { source_apps: apps.map((a) => a.slice(0, 100)) } : {}) });
     }
 
     // Eén aanroep naar Supabase (ververst daarna zelf de activiteit in de cache).
@@ -426,8 +489,13 @@ export function syncHealth(userId: string, { days = HEALTH_SYNC_DAYS }: { days?:
     const lastSyncPreview: HealthDayPreview[] = range
       .slice(-3)
       .reverse()
-      .map((d) => ({ date: d.date, steps: bounded(steps.get(d.date), ACTIVITY_LIMITS.steps), kcal: bounded(kcal.get(d.date), ACTIVITY_LIMITS.activeKcal) }));
-    if (cur.connected) writeLink(userId, { ...cur, lastSyncAt: at, lastSyncDays: payload.length, lastSyncPreview });
+      .map((d) => ({
+        date: d.date,
+        steps: bounded(steps.get(d.date)?.value, ACTIVITY_LIMITS.steps),
+        kcal: bounded(kcal.get(d.date)?.value, ACTIVITY_LIMITS.activeKcal),
+        app: steps.get(d.date)?.app ?? null,
+      }));
+    if (cur.connected) writeLink(userId, { ...cur, lastSyncAt: at, lastSyncDays: payload.length, lastSyncPreview, method: SYNC_METHOD });
     return { sent, days: n, at };
   })();
   running = job;

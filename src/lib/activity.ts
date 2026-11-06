@@ -425,7 +425,10 @@ const APP_LABELS: Record<string, string> = {
 
 /** Leesbare naam van een app-pakket; onbekend wordt "Andere app". */
 export function appLabel(pkg: string): string {
-  return APP_LABELS[pkg] ?? "Andere app";
+  if (APP_LABELS[pkg]) return APP_LABELS[pkg];
+  // Stappen die Health Connect (Android 14+) zelf met de telefoon telt.
+  if (pkg === "android" || pkg.startsWith("com.android.healthconnect.phone")) return "Telefoon";
+  return "Andere app";
 }
 
 /** Bijv. "Health Connect · Garmin Connect" of "Handmatig ingevoerd". */
