@@ -1,5 +1,6 @@
 import { memo } from "react";
-import { MUSCLE_BY_ID, type MuscleId } from "@/lib/muscles";
+import { MUSCLE_BY_ID, MUSCLE_COLOR, muscleLoadColor, type MuscleId } from "@/lib/muscles";
+import { MuscleSwatch } from "./MuscleChips";
 
 /**
  * Gestileerde spierkaart (voor- en achteraanzicht) met losse spierdelen.
@@ -86,19 +87,10 @@ function mirror(points: string): string {
     .join(" ");
 }
 
-/**
- * Kleuren van de spierkaart; ook gebruikt voor legenda's, spierchips en lijstjes met spieren.
- * Eén taal door de hele app: hoofdspier = accent (lime), helpt mee = gedempt accent,
- * en de heatmap loopt van "niet getraind" naar hetzelfde accent.
- */
-export const MUSCLE_COLOR = {
-  skin: "#2a303a",
-  idle: "#434c5b",
-  primary: "#c8f53a",
-  secondary: "#7f984c",
-  outline: "#0b0d10",
-};
-const COLOR = MUSCLE_COLOR;
+// Kleuren via style en niet als SVG-attribuut: MUSCLE_COLOR en de heatmap zijn CSS-waarden
+// (var(), color-mix), en die werken niet in een attribuut als fill="...".
+const SKIN_STYLE = { fill: MUSCLE_COLOR.skin };
+const SKIN_BASE_STYLE = { fill: MUSCLE_COLOR.skin, stroke: MUSCLE_COLOR.skin };
 
 const FRONT_IDS = new Set(FRONT.flatMap((s) => s.muscles));
 const BACK_IDS = new Set(BACK.flatMap((s) => s.muscles));
@@ -112,14 +104,6 @@ export function bestSide(primary: MuscleId[]): "front" | "back" {
 
 function names(ids: MuscleId[]) {
   return ids.map((m) => MUSCLE_BY_ID[m].short).join(", ");
-}
-
-/** Mengt de "niet getraind"-kleur met het accent (zelfde kleur als een hoofdspier), t = 0..1. */
-function heat(t: number): string {
-  const a = [0x43, 0x4c, 0x5b];
-  const b = [0xc8, 0xf5, 0x3a];
-  const c = a.map((v, i) => Math.round(v + (b[i] - v) * Math.min(1, Math.max(0, t))));
-  return `rgb(${c.join(",")})`;
 }
 
 type Props = {
@@ -146,26 +130,29 @@ export const BodyMap = memo(function BodyMap({
 }: Props) {
   function fill(muscles: MuscleId[]) {
     if (intensity) {
-      const t = Math.max(0, ...muscles.map((m) => intensity[m] ?? 0));
-      return t > 0 ? heat(0.25 + 0.75 * t) : COLOR.idle;
+      return muscleLoadColor(Math.max(0, ...muscles.map((m) => intensity[m] ?? 0)));
     }
-    if (muscles.some((m) => primary.includes(m))) return COLOR.primary;
-    if (muscles.some((m) => secondary.includes(m))) return COLOR.secondary;
-    return COLOR.idle;
+    if (muscles.some((m) => primary.includes(m))) return MUSCLE_COLOR.primary;
+    if (muscles.some((m) => secondary.includes(m))) return MUSCLE_COLOR.secondary;
+    return MUSCLE_COLOR.idle;
   }
 
   function figure(shapes: Shape[], dx: number, title: string) {
     return (
       <g transform={`translate(${dx},0)`}>
-        <ellipse cx={100} cy={28} rx={16} ry={20} fill={COLOR.skin} />
+        <ellipse cx={100} cy={28} rx={16} ry={20} style={SKIN_STYLE} />
         {[...BASE_COMMON, ...BASE_COMMON.map(mirror)].map((p, i) => (
-          <polygon key={`b${i}`} points={p} fill={COLOR.skin} stroke={COLOR.skin} strokeWidth={4} strokeLinejoin="round" />
+          <polygon key={`b${i}`} points={p} style={SKIN_BASE_STYLE} strokeWidth={4} strokeLinejoin="round" />
         ))}
-        <ellipse cx={50} cy={207} rx={8} ry={11} fill={COLOR.skin} />
-        <ellipse cx={150} cy={207} rx={8} ry={11} fill={COLOR.skin} />
+        <ellipse cx={50} cy={207} rx={8} ry={11} style={SKIN_STYLE} />
+        <ellipse cx={150} cy={207} rx={8} ry={11} style={SKIN_STYLE} />
         {shapes.flatMap((s, i) => {
           const name = s.muscles.map((m) => MUSCLE_BY_ID[m].short).join(", ");
-          const props = { fill: fill(s.muscles), stroke: COLOR.outline, strokeWidth: 1.2, strokeLinejoin: "round" as const };
+          const props = {
+            style: { fill: fill(s.muscles), stroke: MUSCLE_COLOR.outline },
+            strokeWidth: 1.2,
+            strokeLinejoin: "round" as const,
+          };
           return [
             <polygon key={`l${i}`} points={s.points} {...props}>
               <title>{name}</title>
@@ -176,7 +163,7 @@ export const BodyMap = memo(function BodyMap({
           ];
         })}
         {labels && (
-          <text x={100} y={414} textAnchor="middle" fontSize={13} fill="#9aa1ab" fontFamily="inherit">
+          <text x={100} y={414} textAnchor="middle" fontSize={13} className="fill-muted" fontFamily="inherit">
             {title}
           </text>
         )}
@@ -216,24 +203,35 @@ export const BodyMap = memo(function BodyMap({
   );
 });
 
-export function BodyMapLegend({ heat: heatLegend }: { heat?: boolean } = {}) {
-  if (heatLegend) {
+export function BodyMapLegend({ heat }: { heat?: boolean } = {}) {
+  if (heat) {
+    // Grijs (niet getraind) staat los van de verloop-balk: het verloop begint bij een zweem rood,
+    // precies zoals muscleLoadColor, zodat "niet" en "weinig" niet in elkaar overlopen.
     return (
-      <div className="flex items-center justify-center gap-2 text-xs text-muted" aria-hidden>
-        <span>Weinig</span>
-        <span className="h-2 w-20 rounded-full" style={{ background: `linear-gradient(90deg, ${heat(0.25)}, ${heat(1)})` }} />
-        <span>Veel</span>
+      <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs text-muted" aria-hidden>
+        <span className="flex items-center gap-1.5">
+          <MuscleSwatch role="idle" />
+          Niet getraind
+        </span>
+        <span className="flex items-center gap-2">
+          <span>Weinig</span>
+          <span
+            className="h-2 w-20 rounded-full"
+            style={{ background: `linear-gradient(90deg, ${muscleLoadColor(0.01)}, ${muscleLoadColor(1)})` }}
+          />
+          <span>Veel</span>
+        </span>
       </div>
     );
   }
   return (
     <div className="flex justify-center gap-4 text-xs text-muted">
       <span className="flex items-center gap-1.5">
-        <span className="h-2.5 w-2.5 rounded-sm" style={{ background: COLOR.primary }} />
+        <MuscleSwatch role="primary" />
         Hoofdspier
       </span>
       <span className="flex items-center gap-1.5">
-        <span className="h-2.5 w-2.5 rounded-sm" style={{ background: COLOR.secondary }} />
+        <MuscleSwatch role="secondary" />
         Helpt mee
       </span>
     </div>

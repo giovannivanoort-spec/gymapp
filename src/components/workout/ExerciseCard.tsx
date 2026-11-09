@@ -117,7 +117,7 @@ export function ExerciseCard({
               {we.target_sets} × {we.target_reps} {ex?.timed ? "sec" : "reps"}
             </p>
           </div>
-          {ex && <MuscleChips primary={ex.primary} secondary={ex.secondary} limit={5} />}
+          {ex && <MuscleChips primary={ex.primary} secondary={ex.secondary} limit={4} />}
           {we.notes && <p className="text-sm italic text-muted">“{we.notes}”</p>}
           {(usesPlates || video || ex) && (
             <div className="-ml-0.5 flex flex-wrap gap-2 pt-0.5">

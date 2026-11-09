@@ -13,6 +13,20 @@
   --color-warn: #ffc857;
   /* Tweede persoon in vergelijkingen (jij = accent, de ander = rival). */
   --color-rival: #7cc4ff;
+  /*
+   * Spierkleuren: de enige plek met deze hexwaarden. MUSCLE_COLOR in src/lib/muscles.ts verwijst
+   * hiernaar (var(--color-muscle) enz.), dus wijzig ze alleen hier.
+   * - muscle (hoofdspier, rood) en muscle-help (helpt mee, oranje). Verzadigder en dieper dan
+   *   --color-danger (lichter zalmrood): danger blijft voor fouten en verwijderen, spierrood alleen
+   *   voor spieren. In Tailwind: bg-muscle, bg-muscle-help/10, border-muscle/35.
+   * - muscle-idle: een spier die niet getraind wordt (en het begin van de heatmap).
+   * - muscle-skin: romp en hoofd van de figuur op de spierkaart.
+   * De omlijning van de spierdelen is --color-bg.
+   */
+  --color-muscle: #ff4d5e;
+  --color-muscle-help: #ffa24a;
+  --color-muscle-idle: #434c5b;
+  --color-muscle-skin: #2a303a;
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
 }
 

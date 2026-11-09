@@ -3,7 +3,15 @@
 import { useState } from "react";
 import { focusLabel, type Analysis } from "@/lib/analysis";
 import type { Exercise } from "@/lib/exercise-types";
-import { GROUP_BY_ID, MUSCLE_BY_ID, REGION_COLOR, REGION_LABEL, type MuscleGroupId, type MuscleRegion } from "@/lib/muscles";
+import {
+  GROUP_BY_ID,
+  MUSCLE_BY_ID,
+  muscleLoadColor,
+  REGION_COLOR,
+  REGION_LABEL,
+  type MuscleGroupId,
+  type MuscleRegion,
+} from "@/lib/muscles";
 import { BodyMap, BodyMapLegend } from "./BodyMap";
 import { CheckIcon, ChevronRightIcon, PlusIcon } from "./Icons";
 
@@ -41,7 +49,7 @@ export function MuscleAnalysis({
           <h3 className="font-bold">Spieren in {subject}</h3>
           <span className="text-xs text-muted">{totalSets} sets</span>
         </div>
-        <div className="flex h-2.5 overflow-hidden rounded-full bg-surface-2" aria-hidden>
+        <div className="flex h-2.5 gap-px overflow-hidden rounded-full bg-surface-2" aria-hidden>
           {REGIONS.map((r) =>
             regions[r] > 0 ? (
               <div
@@ -140,13 +148,20 @@ export function MuscleAnalysis({
   );
 }
 
-/** Volume-balk: altijd in het accent, net als de hoofdspieren op de spierkaart. */
+/**
+ * Belasting van een spier(groep) in deze training of dit schema, op dezelfde schaal als de
+ * heatmap erboven (value = sets / meest belaste spier). Lengte en kleur volgen allebei die waarde
+ * (muscleLoadColor): weinig belast is grijsrood, alleen de zwaarst belaste groepen zijn vol rood,
+ * precies zoals op de spierkaart. Zo leest een lange balk niet als fout of waarschuwing. Dit is
+ * bewust geen statusbalk: weekvolume tegen het doel van 10-20 sets (WeeklyVolume, WeeklyProgram)
+ * blijft in de statuskleuren accent/warn, en te veel volume wordt hier als tip ("Let op") gemeld.
+ */
 function Bar({ value, thin }: { value: number; thin?: boolean }) {
   return (
     <div className={`${thin ? "h-1.5" : "h-2"} overflow-hidden rounded-full bg-surface-2`} aria-hidden>
       <div
-        className={`h-full rounded-full bg-accent transition-[width] duration-300 ${thin ? "opacity-70" : ""}`}
-        style={{ width: `${Math.min(100, value * 100)}%` }}
+        className={`h-full rounded-full transition-[width,background-color] duration-300 ${thin ? "opacity-80" : ""}`}
+        style={{ width: `${Math.min(100, value * 100)}%`, background: muscleLoadColor(value) }}
       />
     </div>
   );

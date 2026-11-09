@@ -6,6 +6,7 @@ import { AppShell } from "@/components/AppShell";
 import { useUserId } from "@/components/AuthProvider";
 import { CalendarIcon, ChevronRightIcon, ClipboardIcon, SparkleIcon, UsersIcon } from "@/components/Icons";
 import { fold } from "@/components/ExerciseFilter";
+import { MuscleTag } from "@/components/MuscleChips";
 import { peekFlash, takeFlash } from "@/components/planning/flash";
 import { notify } from "@/components/planning/notify";
 import { PlanTemplateSheet } from "@/components/planning/PlanTemplateSheet";
@@ -267,7 +268,7 @@ function RegionBar({ template: t }: { template: Template }) {
   const regionTotal = Object.values(analysis.regions).reduce((a, b) => a + b, 0);
   if (regionTotal <= 0) return null;
   return (
-    <div className="flex h-1.5 overflow-hidden rounded-full bg-surface-2" aria-hidden>
+    <div className="flex h-1.5 gap-px overflow-hidden rounded-full bg-surface-2" aria-hidden>
       {(["push", "pull", "legs", "core"] as const).map((r) =>
         analysis.regions[r] > 0 ? <div key={r} style={{ width: `${(analysis.regions[r] / regionTotal) * 100}%`, background: REGION_COLOR[r] }} /> : null,
       )}
@@ -330,10 +331,16 @@ function TemplateCard({
                 <UsersIcon size={12} /> {sharedWith}
               </span>
             )}
+            {/*
+              De zwaarst belaste spiergroepen van dit schema: de rode plekken op de heatmap. Rode tint
+              zoals daar, maar zonder het blokje uit de legenda "Hoofdspier", want het gaat hier om
+              belasting en niet om de rol van een spier in een oefening.
+            */}
+            {top.length > 0 && <span className="sr-only">Meest getraind: </span>}
             {top.map((l) => (
-              <span key={l.id} className="rounded-full bg-accent/15 px-2 py-0.5 text-xs text-accent">
+              <MuscleTag key={l.id} swatch={false} title="Meest getrainde spiergroep in dit schema">
                 {GROUP_BY_ID[l.id].name}
-              </span>
+              </MuscleTag>
             ))}
           </div>
         )}

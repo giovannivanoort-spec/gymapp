@@ -20,6 +20,7 @@ import { ChevronLeftIcon, ChevronRightIcon } from "./Icons";
 
 const TREND_WEEKS = 6;
 
+/** Statuskleuren tegen het doel van 10-20 sets per week; bewust niet de spierkleuren (MUSCLE_COLOR). */
 const STATUS: Record<VolumeStatus, { label: string; text: string; bar: string }> = {
   low: { label: "te weinig", text: "text-muted", bar: "bg-muted/70" },
   good: { label: "goed", text: "text-accent", bar: "bg-accent" },

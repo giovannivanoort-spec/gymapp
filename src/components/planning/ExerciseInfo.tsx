@@ -11,9 +11,9 @@ import type { Session } from "@/lib/history";
 import { GROUP_BY_ID, MUSCLE_BY_ID, type MuscleId } from "@/lib/muscles";
 import { supabase } from "@/lib/supabase";
 import { youtubeSearchUrl } from "@/lib/youtube";
-import { BodyMap, BodyMapLegend, MUSCLE_COLOR } from "../BodyMap";
+import { BodyMap, BodyMapLegend } from "../BodyMap";
 import { ChevronRightIcon, ExternalIcon, PlayIcon } from "../Icons";
-import { MuscleChips } from "../MuscleChips";
+import { MuscleChips, MuscleSwatch } from "../MuscleChips";
 import { Sheet } from "../Sheet";
 import { lastHint } from "./useLastSessions";
 
@@ -87,11 +87,7 @@ export function MuscleList({ title, muscles, main }: { title: string; muscles: M
           const m = MUSCLE_BY_ID[id];
           return (
             <li key={id} className="flex items-baseline gap-2">
-              <span
-                className="mt-1 h-2 w-2 shrink-0 rounded-sm"
-                style={{ background: main ? MUSCLE_COLOR.primary : MUSCLE_COLOR.secondary }}
-                aria-hidden
-              />
+              <MuscleSwatch role={main ? "primary" : "secondary"} className="mt-1" />
               <span>
                 <span className="text-muted">{GROUP_BY_ID[m.group].name} · </span>
                 {m.name}
