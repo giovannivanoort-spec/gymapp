@@ -32,6 +32,7 @@ export function SetRow({
   onSave,
   onDelete,
   onUncomplete,
+  onCompleted,
 }: {
   setNumber: number;
   log?: LogRow;
@@ -55,6 +56,13 @@ export function SetRow({
   onDelete: () => void;
   /** Afvinken ongedaan maken (de getallen blijven in de velden staan). Zonder: wissen. */
   onUncomplete?: () => void;
+  /**
+   * De set is bewust afgevinkt en opgeslagen of offline bewaard. Alleen via het vinkje: niet bij het
+   * verlaten van een veld en niet met "Klaar" op het toetsenbord (dat sluit alleen het toetsenbord).
+   * `startedAt` (performance.now()) is het moment van afvinken, zodat een trage opslag een latere
+   * eigen keuze niet overschrijft.
+   */
+  onCompleted?: (startedAt: number) => void;
 }) {
   const [weight, setWeight] = useState(fmtNum(log?.weight));
   const [reps, setReps] = useState(log?.reps?.toString() ?? "");
@@ -85,7 +93,7 @@ export function SetRow({
   const who = personName ? ` van ${personName}` : "";
   const grid = showPrev ? SET_GRID_PREV : SET_GRID;
 
-  async function commit(w = weight, r = reps) {
+  async function commit(w = weight, r = reps): Promise<SaveResult> {
     dirty.current = false;
     // Alleen een laadindicator als het echt even duurt (geen geflikker bij snelle saves).
     const slow = setTimeout(() => setStatus("saving"), 180);
@@ -94,10 +102,11 @@ export function SetRow({
     if (res === "invalid" || res === "error") {
       dirty.current = true;
       setStatus("error");
-      return;
+      return res;
     }
     setStatus("idle");
     if (res === "saved" || res === "queued") setPop((p) => p + 1);
+    return res;
   }
 
   // Vangnet: niet-opgeslagen invoer alsnog bewaren als de rij verdwijnt (pagina verlaten, andere persoon).
@@ -128,7 +137,15 @@ export function SetRow({
     }
     setWeight(w);
     setReps(r);
-    commit(w, r);
+    commitCompleted(w, r);
+  }
+
+  /** Opslaan als bewust afgevinkte set: daarna (opgeslagen of offline bewaard) `onCompleted`. */
+  function commitCompleted(w = weight, r = reps) {
+    const startedAt = performance.now();
+    commit(w, r).then((res) => {
+      if (res === "saved" || res === "queued") onCompleted?.(startedAt);
+    });
   }
 
   /** Terug naar "niet gedaan": de getallen blijven staan, zodat opnieuw afvinken genoeg is. */

@@ -42,6 +42,7 @@ export function ExerciseCard({
   onDelete,
   onUncomplete,
   onFill,
+  onCompleted,
   onCommentsChange,
   onError,
 }: {
@@ -64,6 +65,8 @@ export function ExerciseCard({
   /** Afvinken ongedaan maken zonder de getallen te wissen. */
   onUncomplete?: (we: WorkoutExercise, uid: string, n: number, log: LogRow) => void;
   onFill: (we: WorkoutExercise, uid: string, sets: FillSet[]) => void;
+  /** Een set is bewust afgerond en opgeslagen (voor om de beurt trainen); `startedAt` zoals in SetRow. */
+  onCompleted?: (we: WorkoutExercise, uid: string, n: number, startedAt: number) => void;
   onCommentsChange: () => void;
   onError: (message: string) => void;
 }) {
@@ -188,6 +191,7 @@ export function ExerciseCard({
             onDelete={(n, log) => onDelete(we, p.uid, n, log)}
             onUncomplete={onUncomplete ? (n, log) => onUncomplete(we, p.uid, n, log) : undefined}
             onFill={(sets) => onFill(we, p.uid, sets)}
+            onCompleted={onCompleted ? (n, startedAt) => onCompleted(we, p.uid, n, startedAt) : undefined}
           />
         ))}
       </div>

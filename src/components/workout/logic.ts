@@ -329,6 +329,41 @@ export function doneSets(logs: LogRow[], uid: string): number {
   return logs.reduce((n, l) => n + (l.user_id === uid && isDone(l) ? 1 : 0), 0);
 }
 
+// ─── Open sets per oefening (o.a. om de beurt trainen) ───
+
+/** Een set die net is afgerond en daarom als gedaan telt, ook als hij nog niet in de lijst staat. */
+export type JustDone = { uid: string; n: number };
+
+/** Afgeronde setnummers van iemand bij deze oefening. */
+function doneNumbers(we: WorkoutExercise, uid: string, logs: LogRow[], justDone?: JustDone): Set<number> {
+  const done = new Set<number>();
+  for (const l of logs) if (l.workout_exercise_id === we.id && l.user_id === uid && isDone(l)) done.add(l.set_number);
+  if (justDone?.uid === uid) done.add(justDone.n);
+  return done;
+}
+
+/** Heeft iemand bij deze oefening nog een open set? Het doel gehaald (ook met extra sets) telt als klaar. */
+export function hasOpenSet(we: WorkoutExercise, uid: string, logs: LogRow[], justDone?: JustDone): boolean {
+  return doneNumbers(we, uid, logs, justDone).size < we.target_sets;
+}
+
+/** Eerste set die nog open staat voor iemand bij deze oefening (anders de laatste geplande set). */
+export function firstOpenIn(we: WorkoutExercise, uid: string, logs: LogRow[], justDone?: JustDone): number {
+  const done = doneNumbers(we, uid, logs, justDone);
+  for (let n = 1; n <= we.target_sets; n++) if (!done.has(n)) return n;
+  return Math.max(1, we.target_sets);
+}
+
+/** Volgende persoon na `after` (in de gegeven volgorde, rondom) die bij deze oefening nog een open set heeft. */
+export function nextWithOpenSet(we: WorkoutExercise, after: string, uids: string[], logs: LogRow[], justDone?: JustDone): string | null {
+  const start = uids.indexOf(after);
+  for (let i = 1; i <= uids.length; i++) {
+    const uid = uids[(start + i) % uids.length];
+    if (uid !== after && hasOpenSet(we, uid, logs, justDone)) return uid;
+  }
+  return null;
+}
+
 export function memberProfile(m: GroupMember | undefined, ageFrom: (d: string | null | undefined) => number | null): Profile {
   return {
     bodyweight: m?.profiles?.bodyweight_kg ?? null,

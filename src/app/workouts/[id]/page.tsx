@@ -20,6 +20,7 @@ import {
   bestOf,
   detectAchievement,
   doneSets,
+  firstOpenIn,
   fmtNum,
   fmtSet,
   isDone,
@@ -40,6 +41,8 @@ import {
   type PrevSession,
 } from "@/components/workout/logic";
 import { setAnchorId, type FillSet } from "@/components/workout/PersonSets";
+import { TurnsControl } from "@/components/workout/TurnsControl";
+import { cardInView, useCardInView, useTurns } from "@/components/workout/useTurns";
 import type { SaveResult } from "@/components/workout/SetRow";
 import { toast } from "@/components/ui/Toast";
 import { postActivity } from "@/lib/activities";
@@ -203,21 +206,32 @@ function Workout() {
   const showGroup = groupMode && isTrainer && members.length > 1;
   const canEdit = (uid: string) => isMember && (uid === userId || isTrainer);
   const nameOf = useCallback((uid: string) => members.find((m) => m.user_id === uid)?.profiles?.display_name ?? "Onbekend", [members]);
+  /** Een trainer kan wisselen tussen de leden van de groep. */
+  const switcher = isTrainer && members.length > 1;
+  /** Om de beurt: na het afvinken van een set automatisch door naar de volgende persoon. */
+  const turns = useTurns({
+    workoutId: id,
+    available: switcher,
+    showGroup,
+    forUser,
+    userId,
+    members: members.map((m) => m.user_id),
+    canEdit,
+    logsRef,
+    wexSet,
+    nameOf,
+    focusSet,
+  });
 
   // Wisselen van persoon: dezelfde oefening blijft in beeld (handig als je om de beurt traint).
   const anchor = useRef<{ id: string; top: number } | null>(null);
   function rememberAnchor() {
-    const offset = 150;
-    for (const el of document.querySelectorAll<HTMLElement>("[data-exercise-card]")) {
-      const r = el.getBoundingClientRect();
-      if (r.bottom > offset) {
-        anchor.current = { id: el.id, top: r.top };
-        return;
-      }
-    }
-    anchor.current = null;
+    const el = cardInView();
+    anchor.current = el ? { id: el.id, top: el.getBoundingClientRect().top } : null;
   }
   function switchPerson(uid: string | null) {
+    // Zelf gekozen: een nog geplande wissel (om de beurt) vervalt.
+    turns.cancel();
     rememberAnchor();
     if (uid) setSelectedUser(uid);
     setGroupMode(uid === null);
@@ -230,6 +244,9 @@ function Workout() {
     const el = document.getElementById(a.id);
     if (el) window.scrollBy(0, el.getBoundingClientRect().top - a.top);
   }, [forUser, showGroup]);
+
+  // Oefening die nu in beeld is, voor de knop "Volgende" (wie heeft daar nog een open set).
+  const viewCard = useCardInView(switcher && !showGroup, `${wexKey}|${forUser}`);
 
   // ─── Eerdere trainingen (vorige keer, advies, records) ───
   const slugs = useMemo(() => exercises.map((e) => e.exercise_slug), [exercises]);
@@ -296,9 +313,7 @@ function Workout() {
 
   /** Eerste set die nog open staat voor iemand bij deze oefening (voor het groepsoverzicht). */
   function firstOpenSet(we: WorkoutExercise, uid: string): number {
-    const done = new Set(allLogs.filter((l) => l.workout_exercise_id === we.id && l.user_id === uid && isDone(l)).map((l) => l.set_number));
-    for (let n = 1; n <= we.target_sets; n++) if (!done.has(n)) return n;
-    return Math.max(1, we.target_sets);
+    return firstOpenIn(we, uid, allLogs);
   }
 
   /** Staat deze set nog precies zo (niet intussen aangepast of gewist)? */
@@ -520,6 +535,8 @@ function Workout() {
 
   async function deleteSet(we: WorkoutExercise, uid: string, n: number, existing: LogRow, opts: { undo?: boolean } = { undo: true }) {
     if (!canEdit(uid)) return;
+    // Weer een open set: na een correctie mag "Iedereen klaar" (om de beurt) opnieuw worden gemeld.
+    turns.reopen(we.id);
     const k = setKey(we.id, uid, n);
     const key = { workout_exercise_id: we.id, user_id: uid, set_number: n };
     const previous = existing.failed ? null : existing;
@@ -576,6 +593,8 @@ function Workout() {
 
   /** Afvinken ongedaan maken: de set telt niet meer, de getallen blijven in de velden staan. */
   function uncompleteSet(we: WorkoutExercise, uid: string, n: number, log: LogRow) {
+    // Net afgevinkt en meteen weer teruggezet: niet meer doorgaan naar de volgende persoon.
+    turns.cancel();
     deleteSet(we, uid, n, log, { undo: false });
   }
 
@@ -811,8 +830,17 @@ function Workout() {
     if (list) list.push(l);
     else logsByWex.set(l.workout_exercise_id, [l]);
   }
-  const switcher = isTrainer && members.length > 1;
-  const nextPerson = switcher && !showGroup ? members[(members.findIndex((m) => m.user_id === forUser) + 1) % members.length] : undefined;
+  /**
+   * Volgende persoon voor dezelfde oefening: wie daar nog een open set heeft, anders gewoon de
+   * volgende in de rij.
+   */
+  const nextFor = (cardId: string | null | undefined) =>
+    turns.nextFor(
+      cardId ? exercises.find((e) => `exercise-${e.id}` === cardId) : undefined,
+      forUser,
+      allLogs,
+    );
+  const nextPerson = switcher && !showGroup ? nextFor(viewCard) : undefined;
   const failedHere = allLogs.filter((l) => l.failed).length;
 
   return (
@@ -874,6 +902,7 @@ function Workout() {
                   const done = doneSets(allLogs, m.user_id);
                   const planned = plannedFor(m.user_id);
                   const active = !showGroup && m.user_id === forUser;
+                  const skipped = turns.on && !turns.takesPart(m.user_id);
                   const pct = planned ? Math.min(100, (done / planned) * 100) : 0;
                   return (
                     <button
@@ -883,13 +912,16 @@ function Workout() {
                       aria-pressed={active}
                       className={`min-w-24 shrink-0 rounded-xl border px-3 py-1.5 text-left transition active:scale-[0.97] ${
                         active ? "border-accent bg-accent/10" : "border-line bg-bg hover:border-muted"
-                      }`}
+                      } ${skipped ? "opacity-55" : ""}`}
                     >
                       <span className={`flex items-center gap-1 text-sm font-semibold ${active ? "text-accent" : ""}`}>
                         <span className="max-w-28 truncate">{m.user_id === userId ? "Jij" : (m.profiles?.display_name ?? "Onbekend")}</span>
                         {planned > 0 && done >= planned && <CheckIcon size={13} strokeWidth={3} className="text-accent" />}
                       </span>
-                      <span className="block text-xs tabular-nums text-muted">{loadingLogs ? "…" : `${done}/${planned} sets`}</span>
+                      <span className="block text-xs tabular-nums text-muted">
+                        {loadingLogs ? "…" : `${done}/${planned} sets`}
+                        {skipped && <span className="sr-only">, doet niet mee met om de beurt</span>}
+                      </span>
                       <span className="mt-1 block h-1 overflow-hidden rounded-full bg-surface-2" aria-hidden>
                         <span className="block h-full rounded-full bg-accent transition-[width] duration-500" style={{ width: `${pct}%` }} />
                       </span>
@@ -897,11 +929,27 @@ function Workout() {
                   );
                 })}
               </div>
+              {switcher && (
+                <TurnsControl
+                  on={turns.on}
+                  people={members.filter((m) => canEdit(m.user_id)).map((m) => ({ uid: m.user_id, name: m.user_id === userId ? "Jij" : nameOf(m.user_id) }))}
+                  takesPart={turns.takesPart}
+                  onToggle={turns.setOn}
+                  onTakePart={turns.setTakesPart}
+                />
+              )}
+              {turns.on && (
+                <p className="sr-only" aria-live="polite" aria-atomic="true">
+                  {turns.note}
+                </p>
+              )}
               {nextPerson && (
                 <button
-                  onClick={() => switchPerson(nextPerson.user_id)}
+                  type="button"
+                  // Bij de tik zelf opnieuw bepalen welke oefening in beeld is (het label kan net achterlopen).
+                  onClick={() => switchPerson(nextFor(cardInView()?.id))}
                   className="flex w-14 shrink-0 flex-col items-center justify-center rounded-xl border border-line bg-surface-2 text-xs font-medium text-muted transition hover:text-ink active:scale-[0.97]"
-                  aria-label={`Volgende persoon: ${nextPerson.user_id === userId ? "jij" : nameOf(nextPerson.user_id)}`}
+                  aria-label={`Volgende persoon: ${nextPerson === userId ? "jij" : nameOf(nextPerson)}`}
                   title="Volgende persoon, zelfde oefening"
                 >
                   <ChevronRightIcon size={18} className="text-accent" />
@@ -995,6 +1043,7 @@ function Workout() {
                 onDelete={(w, uid, n, log) => deleteSet(w, uid, n, log)}
                 onUncomplete={uncompleteSet}
                 onFill={fillSets}
+                onCompleted={turns.onCompleted}
                 onCommentsChange={cm.retry}
                 onError={showError}
               />

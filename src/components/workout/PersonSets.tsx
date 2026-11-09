@@ -30,6 +30,7 @@ export function PersonSets({
   onDelete,
   onUncomplete,
   onFill,
+  onCompleted,
 }: {
   we: WorkoutExercise;
   ex?: Exercise;
@@ -49,6 +50,8 @@ export function PersonSets({
   /** Afvinken ongedaan maken zonder de getallen te wissen. */
   onUncomplete?: (n: number, log: LogRow) => void;
   onFill: (sets: FillSet[]) => void;
+  /** Set n is bewust afgerond en opgeslagen (voor om de beurt trainen); `startedAt` zoals in SetRow. */
+  onCompleted?: (n: number, startedAt: number) => void;
 }) {
   // Gewenst aantal rijen na "+ Set" (een gelogde extra set geeft dus niet vanzelf nog een lege rij).
   const [wanted, setWanted] = useState(0);
@@ -175,6 +178,7 @@ export function PersonSets({
               onSave={(w, r) => onSave(n, w, r)}
               onDelete={() => log && onDelete(n, log)}
               onUncomplete={onUncomplete ? () => log && onUncomplete(n, log) : undefined}
+              onCompleted={onCompleted ? (startedAt) => onCompleted(n, startedAt) : undefined}
             />
           );
         })}

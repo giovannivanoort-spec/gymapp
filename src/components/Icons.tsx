@@ -160,6 +160,12 @@ export const RefreshIcon = (p: Props) => (
     <path d="M20 11a8 8 0 00-14.6-4.5M4 4v4h4M4 13a8 8 0 0014.6 4.5M20 20v-4h-4" />
   </Svg>
 );
+/** Om de beurt: rondgaan langs de personen (anders dan RefreshIcon, dat "opnieuw proberen" is). */
+export const TurnsIcon = (p: Props) => (
+  <Svg {...p}>
+    <path d="M17 3l3 3-3 3M4 11V9a3 3 0 013-3h13M7 21l-3-3 3-3M20 13v2a3 3 0 01-3 3H4" />
+  </Svg>
+);
 export const LogOutIcon = (p: Props) => (
   <Svg {...p}>
     <path d="M14 4h4a2 2 0 012 2v12a2 2 0 01-2 2h-4M9 16l-4-4 4-4M5 12h11" />
