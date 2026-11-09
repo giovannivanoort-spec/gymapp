@@ -100,6 +100,14 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <!--
+      Camera: barcodes scannen bij Voeding en foto's maken voor de foto-schatting. De WebView vraagt dit recht
+      pas als je de scanner opent (Capacitor BridgeWebChromeClient); zonder deze regel weigert Android meteen.
+      required="false": de app blijft installeerbaar op toestellen zonder camera (dan typ je de barcode).
+    -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+    <!--
       Health Connect: Spotter leest ALLEEN stappen, actieve kcal en slaap (slaapsessies met fases). Niets
       schrijven. Dit moet exact overeenkomen met de Health apps-verklaring in de Play Console.
     -->

@@ -3,6 +3,7 @@
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import type { IScannerControls } from "@zxing/browser";
 import type { DecodeHintType } from "@zxing/library";
+import { isNativeApp } from "@/lib/native/health";
 import { CloseIcon } from "./Icons";
 import { Portal } from "./Portal";
 
@@ -295,7 +296,11 @@ function ScannerOverlay({
     onDetected(code);
   };
 
-  const message = MESSAGES[status];
+  // In de Android-app staat de cameratoestemming bij de app-rechten, niet in een browser.
+  const message =
+    status === "denied" && isNativeApp()
+      ? "Geen toegang tot je camera. Zet de camera aan bij Instellingen > Apps > Spotter > Rechten, of typ de barcode hieronder. Werkt het daarna nog niet, installeer dan de nieuwste versie van de app."
+      : MESSAGES[status];
   const canRetry =
     status === "denied" || status === "busy" || status === "error";
 
