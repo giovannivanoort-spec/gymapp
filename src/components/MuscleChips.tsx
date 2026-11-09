@@ -22,16 +22,11 @@ export function MuscleSwatch({ role, className = "" }: { role: MuscleRole | "idl
 }
 
 /**
- * Spierlabel in de kleurtaal van de spierkaart, gebouwd op de gewone `chip` (zelfde vorm en
- * hoogte als bijv. de materiaalchip ernaast, die ook py-0.5 gebruikt):
- * - `primary` (hoofdspier): lichtrode tint met rode rand, rood blokje en lichte tekst (ink).
- * - `secondary` (helpt mee): lichtere oranje tint met oranje rand, oranje blokje en gedempte tekst.
- * De tint is laag gehouden (15% en 10%), zodat de tekst goed leesbaar blijft (ink op de rode tint
- * minstens 11:1, gedempte tekst op de oranje tint minstens 5:1, op surface en surface-2) en een rij
- * chips niet als foutmelding leest. Het blokje maakt rood en oranje ook bij lage tint duidelijk.
- * `swatch={false}` laat het blokje weg: voor labels die geen hoofdspier/helpt-mee aangeven maar
- * belasting (de zwaarst getrainde spiergroepen van een schema, de rode plekken op de heatmap), zodat
- * het blokje uit de legenda "Hoofdspier" daar niet iets anders betekent.
+ * Spierlabel op basis van `chip`, in de kleuren van de spierkaart (redenering bij de spiertokens in
+ * globals.css):
+ * - `primary` (hoofdspier): gevulde rode tint, rood blokje, tekst in muscle-ink.
+ * - `secondary` (helpt mee): oranje rand en tint, oranje blokje, gedempte tekst.
+ * `swatch={false}` laat het blokje weg, voor labels die belasting tonen in plaats van de rol.
  */
 export function MuscleTag({
   role = "primary",
@@ -48,7 +43,7 @@ export function MuscleTag({
     <span
       title={title}
       className={`chip gap-1.5 py-0.5 ${swatch ? "pl-2" : ""} ${
-        role === "primary" ? "border-muscle/35 bg-muscle/15 font-medium text-ink" : "border-muscle-help/25 bg-muscle-help/10"
+        role === "primary" ? "border-transparent bg-muscle/20 font-medium text-muscle-ink" : "border-muscle-help/25 bg-muscle-help/10"
       }`}
     >
       {swatch && <MuscleSwatch role={role} />}

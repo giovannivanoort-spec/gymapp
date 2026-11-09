@@ -14,19 +14,25 @@
   /* Tweede persoon in vergelijkingen (jij = accent, de ander = rival). */
   --color-rival: #7cc4ff;
   /*
-   * Spierkleuren: de enige plek met deze hexwaarden. MUSCLE_COLOR in src/lib/muscles.ts verwijst
-   * hiernaar (var(--color-muscle) enz.), dus wijzig ze alleen hier.
-   * - muscle (hoofdspier, rood) en muscle-help (helpt mee, oranje). Verzadigder en dieper dan
-   *   --color-danger (lichter zalmrood): danger blijft voor fouten en verwijderen, spierrood alleen
-   *   voor spieren. In Tailwind: bg-muscle, bg-muscle-help/10, border-muscle/35.
-   * - muscle-idle: een spier die niet getraind wordt (en het begin van de heatmap).
-   * - muscle-skin: romp en hoofd van de figuur op de spierkaart.
-   * De omlijning van de spierdelen is --color-bg.
+   * Spierkleuren, alleen voor spieren (nooit op knoppen of als fout; daarvoor is danger).
+   * MUSCLE_COLOR en muscleLoadColor in src/lib/muscles.ts verwijzen hiernaar: wijzig ze alleen hier.
+   * - muscle: hoofdspier (rood). muscle-help: helpt mee (oranje).
+   * - muscle-ink: tekst op de rode chiptint. Lichter en iets roziger dan muscle, zodat hij
+   *   duidelijk van danger verschilt. Nooit voor fouttekst gebruiken.
+   * - muscle-idle: niet getraind, en het begin van de heatmap. muscle-skin: romp en hoofd.
+   * De chips halen AA op bg, surface en surface-2: controleer na een wijziging met
+   * node scripts/check-muscle-contrast.mjs.
    */
   --color-muscle: #ff4d5e;
   --color-muscle-help: #ffa24a;
+  --color-muscle-ink: #ff8aa0;
   --color-muscle-idle: #434c5b;
   --color-muscle-skin: #2a303a;
+  /* Regio's in de spieranalyse (duwen, trekken, benen, core); REGION_COLOR verwijst hiernaar. */
+  --color-region-push: var(--color-accent);
+  --color-region-pull: #5cc8ff;
+  --color-region-legs: #e6e8eb;
+  --color-region-core: #c792ff;
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
 }
 

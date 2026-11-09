@@ -191,21 +191,18 @@ export const REGION_LABEL: Record<MuscleRegion, string> = {
 };
 
 /**
- * Spierkleuren: de enige plek in de code die bepaalt hoe spieren gekleurd worden. Hoofdspier =
- * rood, helpt mee = oranje, en de heatmap loopt van "niet getraind" (grijs) naar hetzelfde rood.
- * Alle waarden verwijzen naar CSS-tokens in globals.css (--color-muscle, --color-muscle-help,
- * --color-muscle-idle, --color-muscle-skin en --color-bg voor de omlijning): alleen daar staan de
- * hexwaarden. Zo zijn ze in Tailwind te gebruiken (bg-muscle, bg-muscle-help/10, bg-muscle-idle,
- * border-muscle/35) en hier als CSS-waarde (style={{ fill }} in de SVG, color-mix voor de
- * heatmap), zonder dat er twee kopieën bestaan die uit elkaar kunnen lopen.
- * Let op: een SVG-attribuut als fill="var(...)" werkt niet, zet de kleur via style.
- * Gebruikt door de spierkaart en haar legenda (BodyMap), MuscleSwatch/MuscleTag/MuscleChips
- * (chips, spierlijst in de oefeninguitleg, schemakaarten) en de belastingsbalken in de
- * spieranalyse (MuscleAnalysis, met muscleLoadColor, dus dezelfde schaal als de heatmap).
- * Weekvolume (WeeklyVolume, WeeklyProgram) gebruikt statuskleuren (accent/warn), geen
- * spierkleuren: daar zegt de kleur of je binnen 10-20 sets zit, niet welke spier het is.
- * Bewust los van het lime accent (knoppen, navigatie, status, ranks), van --color-danger
- * (fouten, verwijderen) en van REGION_COLOR.
+ * Een CSS-kleur als verwijzing naar een token uit globals.css, bijv. "var(--color-muscle)".
+ * Alleen via style gebruiken (fill, background): niet als SVG-attribuut (fill="var(...)" werkt
+ * daar niet) en niet met hex-alfa erachter; voor transparantie color-mix() gebruiken.
+ */
+type ColorToken = `var(--color-${string})`;
+
+/**
+ * Spierkleuren: hoofdspier = rood, helpt mee = oranje, niet getraind = grijs. De hexwaarden staan
+ * alleen in globals.css (--color-muscle*), zodat Tailwind-klassen (bg-muscle, text-muscle-ink) en
+ * deze waarden niet uit elkaar kunnen lopen. Voor de spierkaart en haar legenda (BodyMap), de
+ * spierchips (MuscleChips) en de belastingsbalken in de spieranalyse (via muscleLoadColor).
+ * Bewust los van accent (knoppen, status, ranks), danger (fouten) en REGION_COLOR.
  */
 export const MUSCLE_COLOR = {
   primary: "var(--color-muscle)",
@@ -216,12 +213,12 @@ export const MUSCLE_COLOR = {
   idle: "var(--color-muscle-idle)",
   /** Lijntje tussen de spierdelen: de achtergrondkleur, zodat de delen los van elkaar staan. */
   outline: "var(--color-bg)",
-} as const;
+} as const satisfies Record<string, ColorToken>;
 
 /**
- * Kleur voor een belasting t (0..1, 1 = meest belaste spier): grijs als er niets gebeurt, en
- * anders van een zweem rood (25%) tot vol rood. Voor de heatmap op de spierkaart, de legenda
- * eronder en de belastingsbalken in de spieranalyse, zodat die drie altijd dezelfde schaal tonen.
+ * Kleur voor een belasting t (0..1, 1 = meest belaste spier): grijs (muscle-idle) bij 0, anders
+ * van een zweem rood (25%) tot vol rood (muscle) bij t >= 1. Eén schaal voor de heatmap, de legenda
+ * eronder en de belastingsbalken in de spieranalyse.
  */
 export function muscleLoadColor(t: number): string {
   if (!(t > 0)) return MUSCLE_COLOR.idle;
@@ -231,15 +228,12 @@ export function muscleLoadColor(t: number): string {
 
 /**
  * Vaste kleur per regio (duwen/trekken/benen/core), voor de verdeling in de spieranalyse en op
- * de schemakaarten. Benen was oranje, maar dat is nu de kleur van "helpt mee" (MUSCLE_COLOR), en
- * rood is de hoofdspier. Daarom is benen lichtgrijs: geen tint die lijkt op lime (duwen), blauw
- * (trekken), paars (core) of de spierkleuren, en door de hoge helderheid ook bij kleurenblindheid
- * goed van de andere drie te onderscheiden. De segmenten in een regiobalk staan bovendien met een
- * dun naadje (gap-px) van elkaar. Duwen (accent), trekken en core zijn ongewijzigd.
+ * de schemakaarten. De waarden staan als tokens in globals.css (--color-region-*); benen is
+ * lichtgrijs, zodat het niet lijkt op duwen (accent), trekken, core of de spierkleuren.
  */
-export const REGION_COLOR: Record<MuscleRegion, string> = {
-  push: "#c8f53a",
-  pull: "#5cc8ff",
-  legs: "#e6e8eb",
-  core: "#c792ff",
+export const REGION_COLOR: Record<MuscleRegion, ColorToken> = {
+  push: "var(--color-region-push)",
+  pull: "var(--color-region-pull)",
+  legs: "var(--color-region-legs)",
+  core: "var(--color-region-core)",
 };
