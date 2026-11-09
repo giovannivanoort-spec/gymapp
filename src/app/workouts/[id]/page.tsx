@@ -42,6 +42,7 @@ import {
 } from "@/components/workout/logic";
 import { setAnchorId, type FillSet } from "@/components/workout/PersonSets";
 import { TurnsControl } from "@/components/workout/TurnsControl";
+import { useLivePlan } from "@/components/workout/useLivePlan";
 import { cardInView, useCardInView, useTurns } from "@/components/workout/useTurns";
 import type { SaveResult } from "@/components/workout/SetRow";
 import { toast } from "@/components/ui/Toast";
@@ -55,6 +56,7 @@ import {
   enqueue,
   enqueueActivity,
   flushQueue,
+  isGoneTargetError,
   markFailed,
   readActivities,
   readFailed,
@@ -67,6 +69,7 @@ import {
   writeTimeout,
 } from "@/lib/offlineQueue";
 import type { LogLike } from "@/lib/ranks";
+import { liveTopic } from "@/lib/realtime";
 import { errorMessage, isAuthError, isRetryableError, staleResponseCount, supabase } from "@/lib/supabase";
 import type { GroupMember, SetLog, WorkoutExercise } from "@/lib/types";
 
@@ -277,6 +280,17 @@ function Workout() {
   const pendingAnnouncements = useRef<PendingAnnouncement[]>([]);
   /** Records in de feed die opnieuw moeten worden nagekeken zodra offline bewerkingen zijn verstuurd. */
   const feedDirty = useRef(new Map<string, { slug: string; uid: string }>());
+  /** Het plan live volgen: aanpassingen en verwijderen door de trainer. */
+  const live = useLivePlan({
+    id,
+    bundle,
+    wexSet,
+    canLog: isMember,
+    retry: wk.retry,
+    onDeleted: () => {
+      pendingAnnouncements.current = [];
+    },
+  });
 
   /** Groepspagina (aanwezigheid) en ranglijst tonen meteen de nieuwe stand. */
   function afterChange(uid: string) {
@@ -454,8 +468,15 @@ function Workout() {
     if (!canEdit(uid)) return "skipped";
     const w = parseWeight(wStr);
     const r = parseReps(rStr);
+    // De trainer heeft deze oefening (of de hele training) intussen weggehaald, bijv. een rij die
+    // verdwijnt en bij het verdwijnen nog invoer wil bewaren: niets opslaan en geen rode "niet
+    // opgeslagen", wel rustig melden dat de invoer niet is bewaard.
     const k = setKey(we.id, uid, n);
     const existing = logsMap.get(k);
+    if (!live.inCurrentPlan(we.id)) {
+      if ((w !== null || r !== null) && (w !== (existing?.weight ?? null) || r !== (existing?.reps ?? null))) live.reportLost();
+      return "skipped";
+    }
     const retry = !!existing?.failed;
     const sig = `${w}|${r}`;
     const inflight = pendingSaves.current.get(k);
@@ -494,6 +515,23 @@ function Workout() {
     const { data, error, status } = res;
     const latest = pendingSaves.current.get(k) === sig;
     if (latest) pendingSaves.current.delete(k);
+
+    // Intussen uit het plan gehaald (of de training verwijderd): deze set kan nergens meer heen.
+    // Niet als "niet opgeslagen" bewaren en geen foutmelding, wel een rustige melding. Alleen als de
+    // server bevestigt dat de oefening weg is; bij een netwerkfout gaat de set gewoon in de wachtrij
+    // (die vraagt het bij het versturen zelf na).
+    const dropped =
+      !!error && !isRetryableError({ ...error, status }) && isGoneTargetError(error) && (await live.confirmGone(we.id));
+    if (dropped) {
+      if (latest) {
+        writesFor(id).forget(k);
+        patchLogs((ls) => ls.filter((l) => keyOfLog(l) !== k));
+        live.reportLost();
+      }
+      dequeue(keyObj);
+      removeFailed(keyObj);
+      return "skipped";
+    }
 
     if (error && isRetryableError({ ...error, status })) {
       // Geen verbinding, time-out of sessie verlopen: bewaren en later versturen. Alleen als dit nog
@@ -691,12 +729,16 @@ function Workout() {
     if (pendingSaves.current.has(k) || !writesFor(id).remote(k, null)) return;
     patchLogs((ls) => ls.filter((l) => l.id !== oid));
   });
+  /** Na een herverbinding, weer online of terug in de app: alles verversen wat gemist kan zijn. */
   const refreshAll = useEffectEvent(() => {
+    if (live.deleted) return;
     reloadLogs();
-    cm.retry();
-    if (wk.error || !bundle) wk.retry();
+    void cm.retry();
+    // Ook het plan: een gemist live signaal van de trainer komt zo alsnog binnen. Haalt de cache
+    // het al op (terug in de app, weer online), dan wordt dat verzoek gedeeld.
+    void live.refreshPlan(false);
   });
-  const refreshComments = useEffectEvent(() => cm.retry());
+  const refreshComments = useEffectEvent(() => void cm.retry());
   /** Na versturen van de wachtrij: definitief mislukte sets niet meer als "gedaan" vasthouden, en verversen. */
   const onSynced = useEffectEvent(() => {
     const w = writesFor(id);
@@ -708,12 +750,23 @@ function Workout() {
     if (workout) invalidate(`group:${workout.group_id}`);
   });
 
+  /**
+   * Voor welke training het sets-kanaal al eens verbonden was. Verbindt het opnieuw voor andere
+   * oefeningen (de trainer paste het plan aan), dan de sets ophalen die intussen binnenkwamen.
+   * Het plan zelf volgt useLivePlan.
+   */
+  const setsJoinedFor = useRef<string | null>(null);
+  const hasWorkout = !!workout;
   useEffect(() => {
-    if (!wexKey) return;
+    if (!wexKey) {
+      // Nog niets gepland: de eerste oefeningen die de trainer toevoegt, tellen als ander plan.
+      if (hasWorkout) setsJoinedFor.current = id;
+      return;
+    }
     let subscribedOnce = false;
     const filter = `workout_exercise_id=in.(${wexKey})`;
     const channel = supabase
-      .channel(`workout-${id}`)
+      .channel(liveTopic(`workout-${id}`))
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "set_logs", filter }, (p) => onRemoteRow(p.new as Record<string, unknown>))
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "set_logs", filter }, (p) => onRemoteRow(p.new as Record<string, unknown>))
       // Verwijderingen zijn niet te filteren; we krijgen alleen het id en negeren onbekende sets.
@@ -723,12 +776,14 @@ function Workout() {
         if (status !== "SUBSCRIBED") return;
         // Na een herverbinding kunnen we updates gemist hebben.
         if (subscribedOnce) refreshAll();
+        else if (setsJoinedFor.current === id) reloadLogs();
         subscribedOnce = true;
+        setsJoinedFor.current = id;
       });
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [id, wexKey]);
+  }, [id, wexKey, hasWorkout, reloadLogs]);
 
   useEffect(() => {
     // Invoer bewaren als de telefoon op slot gaat of je van app wisselt terwijl je nog in een veld zit.
@@ -767,6 +822,29 @@ function Workout() {
   }, []);
 
   // ─── Weergave ───
+  if (live.deleted) {
+    const { certain, byMe, couldLog } = live.deleted;
+    // Niet live gezien (bijv. offline): dan kan het ook zijn dat je geen toegang meer hebt.
+    const reason = byMe
+      ? "Je hebt deze training verwijderd."
+      : certain
+        ? "De trainer heeft deze training verwijderd."
+        : "De trainer heeft deze training verwijderd, of je hebt er geen toegang meer toe.";
+    return (
+      <AppShell title="Training" back="/">
+        <div className="card space-y-3">
+          <p className="font-semibold">{certain || byMe ? "Deze training is verwijderd" : "Deze training is niet meer beschikbaar"}</p>
+          <p className="text-sm text-muted">
+            {reason}
+            {couldLog && !byMe ? " Sets die je nog niet had opgeslagen, zijn niet bewaard." : ""}
+          </p>
+          <Link href="/" className="btn-ghost w-full">
+            Naar home
+          </Link>
+        </div>
+      </AppShell>
+    );
+  }
   if (bundle === undefined) {
     return (
       <AppShell title="Training" back>

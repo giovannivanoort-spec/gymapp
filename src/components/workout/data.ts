@@ -114,9 +114,12 @@ export function useLoad<T>(key: string | null, fetcher: () => Promise<T>, opts: 
     }
   };
   const data = useCached<T>(key, wrapped, opts);
-  const retry = () => {
-    if (key) fetchCached(key, wrapped, opts.persist).catch(() => {});
-  };
+  /**
+   * Opnieuw ophalen (een verzoek dat al loopt, wordt gedeeld). Geeft het resultaat, of undefined
+   * als het mislukte; de fout staat dan in `error`.
+   */
+  const retry = (): Promise<T | undefined> =>
+    key ? fetchCached(key, wrapped, opts.persist).catch(() => undefined) : Promise.resolve(undefined);
   return { data, error: error && error.key === key ? error.message : null, retry };
 }
 

@@ -13,8 +13,11 @@ import {
   readFailed,
   readQueue,
   retryFailed,
+  SYNCED_EVENT,
+  type SyncedDetail,
 } from "@/lib/offlineQueue";
 import { registerServiceWorker } from "@/lib/platform/serviceWorker";
+import { toast } from "@/components/ui/Toast";
 
 /** Hoe lang de melding "opslag vol" blijft staan. */
 const FULL_MS = 8000;
@@ -76,9 +79,16 @@ export function OfflineSync() {
       clearTimeout(fullTimer);
       fullTimer = setTimeout(() => setFullAt(0), FULL_MS);
     };
+    // Sets van een oefening die de trainer intussen uit het plan haalde (of een training die weg
+    // is), kunnen nergens meer heen en zijn weggehaald: dat één keer rustig melden, waar je ook bent.
+    const onSynced = (e: Event) => {
+      const dropped = (e as CustomEvent<SyncedDetail | undefined>).detail?.dropped ?? 0;
+      if (dropped > 0) toast.warn(`${setsLabel(dropped)} niet bewaard: de oefening of training bestaat niet meer`, { duration: 6000 });
+    };
     flush();
 
     window.addEventListener("online", goOnline);
+    window.addEventListener(SYNCED_EVENT, onSynced);
     window.addEventListener("offline", goOffline);
     window.addEventListener(QUEUE_EVENT, update);
     window.addEventListener(QUEUE_FULL_EVENT, onFull);
@@ -90,6 +100,7 @@ export function OfflineSync() {
     return () => {
       window.removeEventListener("online", goOnline);
       window.removeEventListener("offline", goOffline);
+      window.removeEventListener(SYNCED_EVENT, onSynced);
       window.removeEventListener(QUEUE_EVENT, update);
       window.removeEventListener(QUEUE_FULL_EVENT, onFull);
       clearTimeout(fullTimer);
@@ -114,7 +125,7 @@ export function OfflineSync() {
 
   if (online && pending === 0 && failed === 0 && !fullAt) return null;
 
-  const sets = (n: number) => `${n} ${n === 1 ? "set" : "sets"}`;
+  const sets = setsLabel;
   let tone: "warn" | "busy" | "danger" = "busy";
   let text: string;
   let actions: React.ReactNode = null;
@@ -165,6 +176,10 @@ export function OfflineSync() {
       </div>
     </div>
   );
+}
+
+function setsLabel(n: number): string {
+  return `${n} ${n === 1 ? "set" : "sets"}`;
 }
 
 function BannerButton({

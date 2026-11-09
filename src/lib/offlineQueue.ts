@@ -130,6 +130,31 @@ export function removeFailed(key: SetKey) {
   if (next.length !== f.length) writeJson(FAILED_KEY, next);
 }
 
+/**
+ * Haalt alle wachtende en mislukte bewerkingen van deze oefeningen (workout_exercise-ids) weg. Alleen
+ * aanroepen als vaststaat dat ze weg zijn (een live verwijdering, of goneWex: zie dropGoneWex).
+ * Eén schrijfactie per lijst.
+ * Geeft het aantal sets terug waarvan iets is weggehaald (een set die zowel wachtte als mislukte,
+ * telt één keer).
+ */
+export function dropForWex(wexIds: ReadonlySet<string>): number {
+  if (!wexIds.size) return 0;
+  const sets = new Set<string>();
+  const drop = (op: QueuedOp) => {
+    const k = keyOf(op);
+    if (!wexIds.has(k.workout_exercise_id)) return false;
+    sets.add(lockKeyOf(k));
+    return true;
+  };
+  const q = readQueue();
+  const keepQ = q.filter((o) => !drop(o));
+  if (keepQ.length !== q.length) writeQueue(keepQ);
+  const f = readFailed();
+  const keepF = f.filter((x) => !drop(x.op));
+  if (keepF.length !== f.length) writeJson(FAILED_KEY, keepF);
+  return sets.size;
+}
+
 /** Zet een set (opnieuw) op de lijst met mislukte sets, met een Nederlandse foutmelding. */
 export function markFailed(op: QueuedOp, error: unknown) {
   const key = keyOf(op);
@@ -314,9 +339,15 @@ async function flushFinished(uid: string) {
 // ─── Versturen ───
 
 let flushing = false;
-let lastFlush = { sent: 0, failed: 0, stalled: false };
+let lastFlush = { sent: 0, failed: 0, dropped: 0, stalled: false };
 
-/** Resultaat van de laatste verzendpoging: `stalled` = gestopt op netwerk- of sessieproblemen. */
+/** Detail van SYNCED_EVENT na het versturen van de wachtrij. */
+export type SyncedDetail = { sent: number; failed: number; dropped: number };
+
+/**
+ * Resultaat van de laatste verzendpoging: `stalled` = gestopt op netwerk- of sessieproblemen,
+ * `dropped` = sets weggehaald omdat hun oefening niet meer bestaat.
+ */
 export function getLastFlush() {
   return lastFlush;
 }
@@ -344,7 +375,8 @@ async function ensureSession(): Promise<string | null> {
   }
 }
 
-type SendResult = "sent" | "failed" | "stalled" | "skipped";
+/** `dropped`: weggehaald omdat de oefening niet meer bestaat (zie sendOne). */
+type SendResult = "sent" | "failed" | "stalled" | "skipped" | "dropped";
 
 /** Verstuurt de actuele wachtende bewerking voor één set (aanroepen binnen het slot van die set). */
 async function sendOne(key: SetKey, uid: string): Promise<SendResult> {
@@ -368,14 +400,66 @@ async function sendOne(key: SetKey, uid: string): Promise<SendResult> {
     if (isAuthError(err)) await within(supabase.auth.refreshSession(), WRITE_TIMEOUT_MS, null);
     return "stalled";
   }
+  // De oefening is er niet meer (de trainer haalde hem uit het plan of verwijderde de training,
+  // bijv. terwijl je offline was, of je hebt geen toegang meer tot de groep): deze set kan nergens
+  // meer heen, dus niet als "niet opgeslagen" bewaren. Eerst nagaan: dezelfde fout krijg je ook
+  // als je de oefening nog wel ziet maar er niet voor deze persoon mag schrijven; die blijft staan.
+  const gone = !!err && op.kind === "upsert" && isGoneTargetError(err) && (await wexGone(op.row.workout_exercise_id));
   // Alleen deze bewerking weghalen: is de set intussen opnieuw ingevuld, dan blijft die nieuwere staan.
   const raw = JSON.stringify(op);
   writeQueue(readQueue().filter((o) => JSON.stringify(o) !== raw));
+  if (gone) return "dropped";
   if (err) {
     markFailed(op, err);
     return "failed";
   }
   return "sent";
+}
+
+/**
+ * Fout die kan betekenen dat de oefening van een set niet meer bestaat: de RLS-controle faalt dan
+ * (de oefening hoort bij geen groep meer, 42501) of de verwijzing (23503).
+ */
+export function isGoneTargetError(e: { code?: string } | null | undefined): boolean {
+  return e?.code === "42501" || e?.code === "23503";
+}
+
+/**
+ * Welke van deze oefeningen (workout_exercise-ids) zijn er volgens de server niet meer voor deze
+ * gebruiker (verwijderd, of niet meer te zien)? Alleen bij een duidelijk antwoord met een geldige
+ * sessie; bij twijfel (geen sessie, fout, time-out) een lege set, zodat er dan niets verloren gaat.
+ */
+export async function goneWex(wexIds: Iterable<string>): Promise<Set<string>> {
+  const ids = [...new Set(wexIds)];
+  if (!ids.length) return new Set();
+  try {
+    // Zonder sessie ziet de server niets en zou alles "weg" lijken.
+    if (!(await ensureSession())) return new Set();
+    const { data, error } = await supabase.from("workout_exercises").select("id").in("id", ids).abortSignal(writeTimeout());
+    if (error || !data) return new Set();
+    const present = new Set(data.map((r) => (r as { id: string }).id));
+    return new Set(ids.filter((x) => !present.has(x)));
+  } catch {
+    return new Set();
+  }
+}
+
+async function wexGone(wexId: string): Promise<boolean> {
+  return (await goneWex([wexId])).has(wexId);
+}
+
+/**
+ * Als dropForWex, maar alleen voor oefeningen die volgens de server echt weg zijn (zie goneWex).
+ * Vraagt de server alleen iets als er voor deze oefeningen iets wacht of mislukte.
+ */
+export async function dropGoneWex(wexIds: Iterable<string>): Promise<number> {
+  const ids = new Set(wexIds);
+  const hasOps = (op: QueuedOp) => ids.has(keyOf(op).workout_exercise_id);
+  const affected = new Set<string>();
+  for (const op of readQueue()) if (hasOps(op)) affected.add(keyOf(op).workout_exercise_id);
+  for (const f of readFailed()) if (hasOps(f.op)) affected.add(keyOf(f.op).workout_exercise_id);
+  if (!affected.size) return 0;
+  return dropForWex(await goneWex(affected));
 }
 
 /**
@@ -388,12 +472,13 @@ async function sendOne(key: SetKey, uid: string): Promise<SendResult> {
 export async function flushQueue(): Promise<number> {
   if (flushing || typeof navigator === "undefined" || !navigator.onLine) return 0;
   if (!hasPendingWork()) {
-    lastFlush = { sent: 0, failed: 0, stalled: false };
+    lastFlush = { sent: 0, failed: 0, dropped: 0, stalled: false };
     return 0;
   }
   flushing = true;
   let sent = 0;
   let failed = 0;
+  let dropped = 0;
   let stalled = false;
   let uid: string | null = null;
   try {
@@ -414,12 +499,15 @@ export async function flushQueue(): Promise<number> {
       }
       if (res === "sent") sent++;
       else if (res === "failed") failed++;
+      else if (res === "dropped") dropped++;
     }
   } finally {
     flushing = false;
-    lastFlush = { sent, failed, stalled };
+    lastFlush = { sent, failed, dropped, stalled };
   }
-  if (sent || failed) window.dispatchEvent(new Event(SYNCED_EVENT));
+  if (sent || failed || dropped) {
+    window.dispatchEvent(new CustomEvent<SyncedDetail>(SYNCED_EVENT, { detail: { sent, failed, dropped } }));
+  }
   if (!stalled && uid) {
     await flushActivities(uid).catch(() => {});
     await flushFinished(uid).catch(() => {});

@@ -8,7 +8,7 @@ import { useUserId } from "@/components/AuthProvider";
 import { toBuilderItem, WorkoutBuilder, type BuilderValue } from "@/components/WorkoutBuilder";
 import { ConfirmSheet } from "@/components/planning/ConfirmSheet";
 import { refreshTrainingData, useGroupData } from "@/components/groups/groupData";
-import { notifyGroupWorkout, saveGroupWorkout } from "@/components/groups/saveGroupWorkout";
+import { forgetOwnSave, markOwnSave, notifyGroupWorkout, saveGroupWorkout } from "@/components/groups/saveGroupWorkout";
 import { toISODate } from "@/lib/dates";
 import { errorMessage, supabase } from "@/lib/supabase";
 import type { WorkoutExercise } from "@/lib/types";
@@ -120,8 +120,13 @@ function Plan() {
     if (!editId) return;
     setSaving(true);
     setDeleteError(null);
+    // Een eigen tabblad met deze training open toont dan "Je hebt deze training verwijderd". Vooraf,
+    // want het live signaal kan er eerder zijn dan het antwoord.
+    markOwnSave(editId, { kind: "delete" });
     const { data: deleted, error } = await supabase.from("workouts").delete().eq("id", editId).eq("group_id", groupId).select("id");
     if (error || !deleted?.length) {
+      // Niet door deze actie verwijderd: een verwijdering kort hierna (door een andere trainer) is niet van jou.
+      forgetOwnSave(editId);
       // Niets verwijderd zonder fout: geen rechten (meer), of de training is al weg.
       if (!error) {
         const { data: still } = await supabase.from("workouts").select("id").eq("id", editId).maybeSingle();
