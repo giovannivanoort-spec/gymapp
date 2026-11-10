@@ -1,9 +1,9 @@
 "use client";
 
-import { invalidate } from "../cache";
+import { getCached, invalidate, setCached } from "../cache";
 import { toISODate } from "../dates";
 import { isNetworkError, supabase } from "../supabase";
-import { applyQueue, cancelQueuedDeletes, confirmLocal, dropLocal, queueConfirm, queueDelete, queueInsert } from "./offline";
+import { applyQueue, cancelQueuedDeletes, confirmLocal, dropLocal, queueConfirm, queueDelete, queueInsert, queuedChanges } from "./offline";
 import { macrosFor, type Food, type Macros, type Meal, type Per100 } from "./types";
 
 export type FoodLog = {
@@ -43,6 +43,7 @@ export const nutritionKeys = {
   custom: (uid: string) => `nutrition:custom:${uid}`,
   saved: (uid: string) => `nutrition:saved:${uid}`,
   frequent: (uid: string) => `nutrition:frequent:${uid}`,
+  history: (uid: string) => `nutrition:history:${uid}`,
 };
 
 /**
@@ -234,12 +235,14 @@ export async function deleteLogs(ids: string[]) {
   markNutritionMutation();
   // Wat nog in de wachtrij stond, heeft de server nooit gezien: daar alleen uit de wachtrij halen.
   const remote = dropLocal(ids);
-  if (!remote.length) return;
-  const { error } = await supabase.from("food_logs").delete().in("id", remote);
-  if (error) {
-    if (!isNetworkError(error)) throw error;
-    await queueDelete(remote);
+  if (remote.length) {
+    const { error } = await supabase.from("food_logs").delete().in("id", remote);
+    if (error) {
+      if (!isNetworkError(error)) throw error;
+      await queueDelete(remote);
+    }
   }
+  forgetInHistory(ids);
 }
 
 /** Gepland eten bevestigen: het telt vanaf nu mee. */
@@ -273,7 +276,7 @@ export function fiberOf(l: FoodLog): number | null {
 /* ───────── Producten ───────── */
 
 /** Een gelogd item weer als product (voor recent, kopiëren en opslaan als maaltijd). */
-export function logToFood(l: FoodLog): Food {
+export function logToFood(l: Pick<FoodLog, "food_id" | "source" | "name" | "brand" | "per100">): Food {
   return { id: l.food_id, source: l.source, name: l.name, brand: l.brand, per100: l.per100, portions: [] };
 }
 
@@ -330,6 +333,164 @@ export async function fetchFrequent(perMeal = 5): Promise<Record<Meal, FrequentI
       .sort((a, b) => b.count - a.count)
       .slice(0, perMeal);
   return { breakfast: top(byMeal.breakfast), lunch: top(byMeal.lunch), dinner: top(byMeal.dinner), snack: top(byMeal.snack) };
+}
+
+/** Een product dat je eerder hebt gegeten, met de laatst gebruikte hoeveelheid. */
+export type HistoryFood = {
+  /**
+   * Kopie uit het nieuwste item (naam, merk en voedingswaarden zoals je het het laatst logde). De
+   * porties staan niet in het dagboek; die bewaren we als ze bekend zijn (bijv. "1 bakje" van een
+   * gescand product), anders is de lijst leeg.
+   */
+  food: Food;
+  grams: number;
+  portion_label: string | null;
+  /** Hoe vaak gelogd binnen de opgehaalde items. */
+  count: number;
+  /** created_at van het nieuwste item. */
+  last: string;
+};
+
+/** Een gelogd item met alleen wat de eetgeschiedenis nodig heeft (geen totalen, dag of maaltijd). */
+type HistoryRow = Pick<FoodLog, "id" | "food_id" | "source" | "name" | "brand" | "grams" | "portion_label" | "per100" | "planned" | "created_at">;
+
+const HISTORY_COLUMNS = "id, food_id, source, name, brand, grams, portion_label, per100, planned, created_at";
+/** Zoveel gelogde items halen we op om in je eigen eetgeschiedenis te zoeken. */
+const HISTORY_LIMIT = 600;
+
+/** Telt mee in de eetgeschiedenis: geen snelle invoer en geen (nog niet bevestigde) planning. */
+const inHistory = (r: Pick<FoodLog, "food_id" | "planned">) => !!r.food_id && !isQuick(r) && !r.planned;
+
+const newestFirst = (a: Pick<FoodLog, "created_at">, b: Pick<FoodLog, "created_at">) => Date.parse(b.created_at) - Date.parse(a.created_at);
+
+/**
+ * Gelogde items (al gefilterd en nieuwste eerst) per product samenvoegen: het nieuwste item bepaalt
+ * hoeveelheid, portie en voedingswaarden. Porties komen uit `portions` (per product-id) als bekend.
+ */
+function groupHistory(rows: HistoryRow[], portions?: Map<string, Food["portions"]>): Map<string, HistoryFood> {
+  const map = new Map<string, HistoryFood>();
+  for (const row of rows) {
+    const hit = map.get(row.food_id);
+    if (hit) {
+      hit.count++;
+      continue;
+    }
+    const food = logToFood(row);
+    const known = portions?.get(row.food_id);
+    map.set(row.food_id, {
+      food: known?.length ? { ...food, portions: known } : food,
+      grams: num(row.grams),
+      portion_label: row.portion_label ?? null,
+      count: 1,
+      last: row.created_at,
+    });
+  }
+  return map;
+}
+
+/** Bekende porties per product-id uit een eerdere geschiedenis en/of losse producten. */
+function portionsById(prev?: HistoryFood[], foods?: Food[]): Map<string, Food["portions"]> {
+  const out = new Map<string, Food["portions"]>();
+  for (const h of prev ?? []) if (h.food.portions?.length) out.set(h.food.id, h.food.portions);
+  for (const f of foods ?? []) if (f.portions?.length) out.set(f.id, f.portions);
+  return out;
+}
+
+/**
+ * Alle verschillende producten uit je laatste ~600 gelogde items (zonder snelle invoer en
+ * planningen), nieuwste eerst, voor zoeken in wat je eerder at. Bewaard in de cache, zodat zoeken
+ * ook zonder verbinding werkt. Wat zonder verbinding is gelogd en nog in de wachtrij staat, telt
+ * ook mee. `prev` (de vorige stand) levert de porties die niet in het dagboek staan.
+ */
+export async function fetchHistoryFoods(prev?: HistoryFood[]): Promise<HistoryFood[]> {
+  const [{ data, error }, queue] = await Promise.all([
+    supabase.from("food_logs").select(HISTORY_COLUMNS).order("created_at", { ascending: false }).limit(HISTORY_LIMIT),
+    queuedChanges(),
+  ]);
+  if (error) throw error;
+  const queued = new Set(queue.inserts.map((r) => r.id));
+  const server = ((data ?? []) as Record<string, unknown>[])
+    .map((r): HistoryRow => ({ ...(r as unknown as HistoryRow), grams: num(r.grams), portion_label: (r.portion_label as string | null) ?? null, planned: !!r.planned }))
+    .filter((r) => !queue.deleted.has(r.id) && !queued.has(r.id))
+    .map((r) => (queue.confirmed.has(r.id) ? { ...r, planned: false } : r));
+  const rows = [...queue.inserts, ...server].filter(inHistory).sort(newestFirst);
+  return [...groupHistory(rows, portionsById(prev)).values()];
+}
+
+/**
+ * Net gelogde items vooraan in de geschiedenis zetten (aantal +1, laatste hoeveelheid en portie),
+ * zonder alles opnieuw op te halen. Een item dat er al in zat (zelfde tijdstip), telt niet dubbel.
+ * `foods` zijn de producten zoals je ze net toevoegde: hun porties blijven zo bewaard.
+ */
+function mergeHistory(prev: HistoryFood[], logs: HistoryRow[], foods?: Food[]): HistoryFood[] {
+  const known = new Map(prev.map((h) => [h.food.id, h]));
+  const fresh = groupHistory(
+    logs.filter((l) => inHistory(l) && known.get(l.food_id)?.last !== l.created_at).sort(newestFirst),
+    portionsById(prev, foods),
+  );
+  if (!fresh.size) return prev;
+  for (const [id, h] of fresh) h.count += known.get(id)?.count ?? 0;
+  return [...fresh.values(), ...prev.filter((h) => !fresh.has(h.food.id))];
+}
+
+/** Hoe een product in de geschiedenis stond vlak voordat een item werd toegevoegd (per log-id). */
+type HistoryBefore = { key: string; foodId: string; at: string; prev: HistoryFood | null };
+const historyBefore = new Map<string, HistoryBefore>();
+/** Zoveel toevoegingen onthouden we om ongedaan te kunnen maken (de melding staat maar even). */
+const HISTORY_BEFORE_MAX = 100;
+
+/**
+ * Na toevoegen: de bewaarde geschiedenis direct bijwerken (ook zonder verbinding, met wachtende
+ * items) en als vers markeren. Aanroepen ná invalidateNutrition: dan haalt een open paneel niet
+ * bij elk product opnieuw ~600 items op; na de gewone bewaartijd wordt hij weer met de server
+ * gelijkgetrokken. Nog nooit geladen: niets doen, de eerste fetch haalt alles op. De vorige stand
+ * per product wordt onthouden, zodat "Ongedaan maken" hem ook zonder verbinding terugzet.
+ */
+export function rememberInHistory(uid: string, logs: FoodLog[], foods?: Food[]) {
+  const key = nutritionKeys.history(uid);
+  const prev = getCached<HistoryFood[]>(key);
+  if (!prev) return;
+  const next = mergeHistory(prev, logs, foods);
+  if (next === prev) return;
+  const before = new Map(prev.map((h) => [h.food.id, h]));
+  for (const l of logs) {
+    if (!inHistory(l) || before.get(l.food_id)?.last === l.created_at) continue;
+    historyBefore.set(l.id, { key, foodId: l.food_id, at: l.created_at, prev: before.get(l.food_id) ?? null });
+  }
+  for (const id of [...historyBefore.keys()].slice(0, Math.max(0, historyBefore.size - HISTORY_BEFORE_MAX))) historyBefore.delete(id);
+  setCached(key, next, true);
+}
+
+/**
+ * Na verwijderen (bijv. "Ongedaan maken" direct na toevoegen): wat rememberInHistory voor deze
+ * items deed, terugdraaien. Was het verwijderde item het laatst gelogde van dat product, dan komt
+ * de vorige stand terug (of verdwijnt het product als het nieuw was); anders telt het één minder.
+ * Zo klopt de bewaarde geschiedenis ook als opnieuw ophalen zonder verbinding niet lukt; online
+ * haalt de invalidate daarna alsnog de stand van de server op.
+ */
+function forgetInHistory(ids: string[]) {
+  const recs = ids.flatMap((id) => {
+    const r = historyBefore.get(id);
+    historyBefore.delete(id);
+    return r ? [r] : [];
+  });
+  // Oudste eerst: bij twee keer hetzelfde product in één keer toegevoegd telt de oudste eerst af,
+  // daarna zet de nieuwste de stand van daarvoor terug.
+  recs.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  const lists = new Map<string, HistoryFood[]>();
+  for (const r of recs) {
+    const list = lists.get(r.key) ?? getCached<HistoryFood[]>(r.key);
+    if (!list) continue;
+    const i = list.findIndex((h) => h.food.id === r.foodId);
+    if (i < 0) continue;
+    const cur = list[i];
+    const next = [...list];
+    if (cur.last !== r.at) next[i] = { ...cur, count: Math.max(1, cur.count - 1) };
+    else if (r.prev) next[i] = r.prev;
+    else next.splice(i, 1);
+    lists.set(r.key, next);
+  }
+  for (const [key, list] of lists) setCached(key, list, true);
 }
 
 export async function fetchFavorites(): Promise<Food[]> {

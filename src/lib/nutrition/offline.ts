@@ -147,6 +147,26 @@ export async function applyQueue(logs: FoodLog[], from: string, to: string): Pro
   return [...out].sort((a, b) => a.created_at.localeCompare(b.created_at));
 }
 
+/**
+ * Wat er voor de huidige gebruiker nog in de wachtrij staat, los van een datumbereik (bijv. voor
+ * zoeken in je eetgeschiedenis): nieuwe items die nog niet verstuurd zijn (met `pending: true`,
+ * verwijderingen en bevestigingen al verwerkt), en de ids die zonder verbinding zijn verwijderd of
+ * bevestigd en op de server dus nog de oude stand hebben.
+ */
+export async function queuedChanges(): Promise<{ inserts: FoodLog[]; deleted: Set<string>; confirmed: Set<string> }> {
+  const ops = read();
+  const out = { inserts: [] as FoodLog[], deleted: new Set<string>(), confirmed: new Set<string>() };
+  if (!ops.length) return out;
+  const uid = await currentUser();
+  for (const op of ops) {
+    if (op.by && uid && op.by !== uid) continue;
+    if (op.kind === "insert") out.inserts.push(...op.rows.map((r) => ({ ...r, pending: true })));
+    else if (op.kind === "delete") op.ids.forEach((id) => out.deleted.add(id));
+    else op.ids.forEach((id) => out.confirmed.add(id));
+  }
+  return out;
+}
+
 /** Een rij zoals de database hem verwacht (zonder lokale velden). */
 function dbRow(r: FoodLog) {
   return {
