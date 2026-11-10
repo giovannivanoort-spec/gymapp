@@ -237,3 +237,9 @@ export const ListIcon = (p: Props) => (
     <path d="M8.5 8.5h7M8.5 12h7M8.5 15.5h4" />
   </Svg>
 );
+/** Bewerken of zelf beschrijven: potlood. */
+export const PencilIcon = (p: Props) => (
+  <Svg {...p}>
+    <path d="M4 20h4L19 9l-4-4L4 16v4zM14 6l4 4" />
+  </Svg>
+);

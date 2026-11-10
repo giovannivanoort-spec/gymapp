@@ -93,6 +93,13 @@ create policy "food_favorites own" on public.food_favorites for all to authentic
 drop policy if exists "saved_meals own" on public.saved_meals;
 create policy "saved_meals own" on public.saved_meals for all to authenticated
   using (user_id = auth.uid()) with check (user_id = auth.uid());
+-- ai_usage telt de daglimieten van de AI-schattingen: alleen lezen en toevoegen, nooit wijzigen of
+-- verwijderen (anders zet je je eigen limiet terug). Zelfde als upgrade-nutrition.sql.
 drop policy if exists "ai_usage own" on public.ai_usage;
-create policy "ai_usage own" on public.ai_usage for all to authenticated
-  using (user_id = auth.uid()) with check (user_id = auth.uid());
+drop policy if exists "ai_usage select own" on public.ai_usage;
+drop policy if exists "ai_usage insert own" on public.ai_usage;
+create policy "ai_usage select own" on public.ai_usage for select to authenticated
+  using (user_id = auth.uid());
+create policy "ai_usage insert own" on public.ai_usage for insert to authenticated
+  with check (user_id = auth.uid());
+revoke update, delete on public.ai_usage from authenticated, anon;

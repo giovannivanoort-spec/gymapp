@@ -583,7 +583,7 @@ export function AddFoodSheet({
           <div className="space-y-4">
             <div className="grid grid-cols-4 gap-2">
               <ActionButton label="Barcode" onClick={() => setScanner(true)} icon={<BarcodeIcon />} disabled={lookingUp} />
-              <ActionButton label="Foto" onClick={() => setMode({ kind: "photo" })} icon={<SparkleIcon size={20} />} />
+              <ActionButton label="AI" onClick={() => setMode({ kind: "photo" })} icon={<SparkleIcon size={20} />} />
               <ActionButton label="Snel" onClick={() => setMode({ kind: "quick" })} icon={<FlameIcon size={20} />} />
               <ActionButton label="Product" onClick={() => setMode({ kind: "custom" })} icon={<PlusIcon size={20} />} />
             </div>
