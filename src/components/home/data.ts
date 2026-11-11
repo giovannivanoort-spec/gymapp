@@ -2,6 +2,7 @@
 
 import { EXERCISE_BY_SLUG } from "@/lib/exercises";
 import { sessionsBySlug, type HistorySet, type Session } from "@/lib/history";
+import { isWeighted, sessionRecords } from "@/lib/progress/records";
 import { supabase } from "@/lib/supabase";
 import type { Role, Workout } from "@/lib/types";
 
@@ -12,17 +13,23 @@ export type UpcomingWorkout = Workout & { groups: { name: string } | null; worko
 export const exerciseCount = (w: UpcomingWorkout) => w.workout_exercises[0]?.count ?? 0;
 export const exercisesLabel = (n: number) => (n === 0 ? "Nog geen oefeningen" : `${n} ${n === 1 ? "oefening" : "oefeningen"}`);
 
-/** Trainingen van je eigen groepen vanaf `from` (groups!inner: niet die van vrienden). */
+/**
+ * Trainingen van je eigen groepen vanaf `from`, niet die van vrienden of van verlaten groepen.
+ * De ledenlijst dient als filter: die is alleen voor leden leesbaar, dus via de inner joins vallen
+ * trainingen weg die je alleen als vriend of via je eigen sets mag zien. Alleen groups!inner is niet
+ * genoeg: een groep die je ooit zelf aanmaakte blijft na verlaten leesbaar (upgrade-own-history.sql).
+ */
 export async function fetchUpcoming(from: string): Promise<UpcomingWorkout[]> {
   const { data, error } = await supabase
     .from("workouts")
-    .select("*, groups!inner(name), workout_exercises(count)")
+    .select("*, groups!inner(name, group_members!inner(user_id)), workout_exercises(count)")
     .gte("date", from)
     .order("date")
     .order("created_at")
     .limit(12);
   if (error) throw error;
-  return (data ?? []) as UpcomingWorkout[];
+  // Alleen de groepsnaam bewaren; de ledenlijst diende alleen als filter.
+  return ((data ?? []) as (UpcomingWorkout & { groups: { name: string } })[]).map((w) => ({ ...w, groups: { name: w.groups.name } }));
 }
 
 // ───────────────────────── Training van vandaag ─────────────────────────
@@ -132,40 +139,50 @@ export type PersonalRecord = {
   name: string;
   date: string;
   workoutId: string;
+  /**
+   * "e1rm": hogere geschatte 1RM (`unit` "kg"), of zonder gewicht meer reps of seconden ("reps").
+   * "rep": zwaarder dan ooit voor minstens `reps` herhalingen (rep-record), zonder 1RM-record.
+   */
+  kind: "e1rm" | "rep";
+  /** Bij een rep-record: het herhalingsaantal (bijv. 8 voor een 8RM-record). */
+  reps?: number;
+  /** Bij een rep-record van een lichaamsgewicht-oefening: `value` en `delta` zijn extra gewicht. */
+  added?: boolean;
   unit: "kg" | "reps";
   value: number;
   delta: number;
 };
 
-/** Sessies die een record waren ten opzichte van alles daarvoor (een eerste keer telt niet). */
+/**
+ * Records in de sessies die door `filter` komen, per oefening hoogstens één. Zelfde regels als de
+ * voortgangspagina, vriendenprofielen en het afrondscherm (sessionRecords): een hogere geschatte 1RM
+ * (zonder gewicht: meer reps of seconden), of anders een rep-record. De eerste keer telt niet.
+ * Per oefening gaat een 1RM-record voor een rep-record, daarna het nieuwste en de grootste winst.
+ */
 export function findRecords(history: HistorySet[], filter: (s: Session) => boolean): PersonalRecord[] {
-  const out: PersonalRecord[] = [];
+  const best = new Map<string, PersonalRecord>();
   for (const [slug, list] of sessionsBySlug(history)) {
-    list.forEach((s, i) => {
-      if (!filter(s)) return;
-      const prior = list.slice(0, i).filter((p) => p.date < s.date);
-      if (!prior.length) return;
-      if (s.best1RM != null) {
-        const prev = Math.max(0, ...prior.map((p) => p.best1RM ?? 0));
-        if (prev > 0 && s.best1RM > prev) {
-          out.push({ slug, name: EXERCISE_BY_SLUG[slug]?.name ?? slug, date: s.date, workoutId: s.workoutId, unit: "kg", value: s.best1RM, delta: s.best1RM - prev });
-        }
-      } else if (!s.sets.some((x) => (x.weight ?? 0) > 0)) {
-        const bw = prior.filter((p) => p.best1RM == null);
-        const prev = Math.max(0, ...bw.map((p) => p.maxReps));
-        if (bw.length && prev > 0 && s.maxReps > prev) {
-          out.push({ slug, name: EXERCISE_BY_SLUG[slug]?.name ?? slug, date: s.date, workoutId: s.workoutId, unit: "reps", value: s.maxReps, delta: s.maxReps - prev });
-        }
-      }
+    const weighted = isWeighted(list);
+    sessionRecords(slug, list, weighted).forEach((r, i) => {
+      const s = list[i];
+      if (!r || !filter(s)) return;
+      const base = { slug, name: EXERCISE_BY_SLUG[slug]?.name ?? slug, date: s.date, workoutId: s.workoutId };
+      const row: PersonalRecord =
+        r.kind === "e1rm"
+          ? { ...base, kind: "e1rm", unit: weighted ? "kg" : "reps", value: r.value, delta: r.value - r.previous }
+          : { ...base, kind: "rep", reps: r.reps, added: r.added, unit: "kg", value: r.weight, delta: r.weight - r.previous };
+      const cur = best.get(slug);
+      if (!cur || preferRecord(row, cur)) best.set(slug, row);
     });
   }
-  // Per oefening alleen het hoogste record.
-  const best = new Map<string, PersonalRecord>();
-  for (const r of out) {
-    const cur = best.get(r.slug);
-    if (!cur || r.value > cur.value) best.set(r.slug, r);
-  }
   return [...best.values()].sort((a, b) => b.date.localeCompare(a.date) || b.delta - a.delta);
+}
+
+/** Gaat `a` voor `b` als record van dezelfde oefening? 1RM-record eerst, dan nieuwste, dan grootste winst. */
+function preferRecord(a: PersonalRecord, b: PersonalRecord): boolean {
+  if (a.kind !== b.kind) return a.kind === "e1rm";
+  if (a.date !== b.date) return a.date > b.date;
+  return a.delta > b.delta;
 }
 
 export const kg = (n: number) => `${(Math.round(n * 10) / 10).toLocaleString("nl-NL")} kg`;

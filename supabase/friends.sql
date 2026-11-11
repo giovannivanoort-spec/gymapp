@@ -121,17 +121,51 @@
     );
   $$;
   
+  -- Heb ik zelf sets gelogd in deze oefening / training? Zo blijven je eigen sets na het verlaten van
+  -- een groep leesbaar. Kijkt alleen naar je eigen rijen. Zelfde functies als in schema.sql en
+  -- upgrade-own-history.sql; hier opnieuw zodat de leesregels hieronder ze altijd meenemen.
+  create or replace function public.own_logged_wex(weid uuid)
+  returns boolean language sql stable security definer set search_path = public as $$
+    select exists (select 1 from set_logs where workout_exercise_id = weid and user_id = (select auth.uid()));
+  $$;
+
+  create or replace function public.own_logged_workout(wid uuid)
+  returns boolean language sql stable security definer set search_path = public as $$
+    select exists (
+      select 1 from set_logs sl join workout_exercises we on we.id = sl.workout_exercise_id
+      where we.workout_id = wid and sl.user_id = (select auth.uid())
+    );
+  $$;
+
+  revoke execute on function public.own_logged_wex(uuid) from public, anon;
+  revoke execute on function public.own_logged_workout(uuid) from public, anon;
+  grant execute on function public.own_logged_wex(uuid) to authenticated;
+  grant execute on function public.own_logged_workout(uuid) to authenticated;
+
+  -- Leesregels: eigen sets eerst (goedkoopste controle), dan groep en vrienden.
   drop policy if exists "sets read" on public.set_logs;
   create policy "sets read" on public.set_logs for select to authenticated
-    using (public.is_member(public.workout_exercise_group(workout_exercise_id)) or public.is_friend(user_id));
-  
+    using (
+      user_id = (select auth.uid())
+      or public.is_member(public.workout_exercise_group(workout_exercise_id))
+      or public.is_friend(user_id)
+    );
+
   drop policy if exists "wex read" on public.workout_exercises;
   create policy "wex read" on public.workout_exercises for select to authenticated
-    using (public.is_member(public.workout_group(workout_id)) or public.friend_logged_wex(id));
-  
+    using (
+      public.is_member(public.workout_group(workout_id))
+      or public.friend_logged_wex(id)
+      or public.own_logged_wex(id)
+    );
+
   drop policy if exists "workouts read" on public.workouts;
   create policy "workouts read" on public.workouts for select to authenticated
-    using (public.is_member(group_id) or public.friend_logged_workout(id));
+    using (
+      public.is_member(group_id)
+      or public.friend_logged_workout(id)
+      or public.own_logged_workout(id)
+    );
   
   drop policy if exists "bodyweight read" on public.bodyweight_logs;
   create policy "bodyweight read" on public.bodyweight_logs for select to authenticated

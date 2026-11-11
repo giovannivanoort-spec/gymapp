@@ -702,15 +702,7 @@ export function invalidate(prefix: string, { soft = false }: { soft?: boolean } 
  */
 export function removeCached(prefix: string) {
   if (!prefix) return;
-  const keys = new Set<string>();
-  for (const k of mem.keys()) if (k.startsWith(prefix)) keys.add(k);
-  for (const k of inflight.keys()) if (k.startsWith(prefix)) keys.add(k);
-  for (const k of status.keys()) if (k.startsWith(prefix)) keys.add(k);
-  for (const sk of persistIndex().keys()) {
-    const k = sk.slice(LS_PREFIX.length);
-    if (k.startsWith(prefix)) keys.add(k);
-  }
-  for (const k of idbIndex?.keys() ?? []) if (k.startsWith(prefix)) keys.add(k);
+  const keys = keysWithPrefix(prefix, { includeInflight: true });
   for (const key of keys) {
     bump(key);
     removedAt.set(key, versionOf(key));
@@ -732,6 +724,48 @@ export function removeCached(prefix: string) {
     missing.delete(key);
     notify(key);
   }
+}
+
+/**
+ * Sleutels die met `prefix` beginnen en in het geheugen of op het toestel staan (IndexedDB alleen
+ * als dat overzicht al geladen is). Met `includeInflight` ook sleutels die nu worden opgehaald of
+ * alleen een status (bijv. een fout) hebben.
+ */
+function keysWithPrefix(prefix: string, { includeInflight = false }: { includeInflight?: boolean } = {}): Set<string> {
+  const keys = new Set<string>();
+  const add = (k: string) => {
+    if (k.startsWith(prefix)) keys.add(k);
+  };
+  for (const k of mem.keys()) add(k);
+  if (includeInflight) {
+    for (const k of inflight.keys()) add(k);
+    for (const k of status.keys()) add(k);
+  }
+  for (const sk of persistIndex().keys()) add(sk.slice(LS_PREFIX.length));
+  for (const k of idbIndex?.keys() ?? []) add(k);
+  return keys;
+}
+
+/**
+ * Alle sleutels met `prefix` waarvoor data in het geheugen of op het toestel staat, ook grote items
+ * in IndexedDB (dat overzicht wordt zo nodig eerst ingelezen). Om gericht op te ruimen op basis van
+ * de inhoud, samen met readCached.
+ */
+export async function cachedKeys(prefix: string): Promise<string[]> {
+  await loadIdbIndex();
+  return [...keysWithPrefix(prefix)];
+}
+
+/**
+ * Leest de bewaarde data van één sleutel zonder op te halen, ook als die alleen nog in IndexedDB
+ * staat (die komt dan tijdelijk in het geheugen en verdwijnt daar vanzelf weer als hij niet wordt
+ * gebruikt). Undefined als er niets (meer) is of het niet kon worden gelezen.
+ */
+export async function readCached<T>(key: string): Promise<T | undefined> {
+  const hit = load(key);
+  if (hit) return hit.data as T;
+  await pendingIdb.get(key);
+  return mem.get(key)?.data as T | undefined;
 }
 
 /**

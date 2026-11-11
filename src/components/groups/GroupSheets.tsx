@@ -145,7 +145,8 @@ export function LeaveSheet({
   members: GroupMember[];
   userId: string;
   onClose: () => void;
-  onLeft: () => void;
+  /** Na verlaten; `deleted` als de groep daarbij is verwijderd (je was het enige lid en trainer). */
+  onLeft: (deleted: boolean) => void;
 }) {
   const me = members.find((m) => m.user_id === userId);
   const others = members.filter((m) => m.user_id !== userId);
@@ -163,8 +164,9 @@ export function LeaveSheet({
     if (mode === "handover" && !successor) return;
     setBusy(true);
     setError(null);
+    const deletes = mode === "alone" && me?.role === "trainer";
     try {
-      if (mode === "alone" && me?.role === "trainer") {
+      if (deletes) {
         const { data: deleted, error } = await supabase.from("groups").delete().eq("id", groupId).select("id");
         if (error) throw error;
         // Niets verwijderd zonder fout: RLS weigerde stil (bijv. je rol is intussen veranderd).
@@ -172,7 +174,7 @@ export function LeaveSheet({
       } else {
         await leaveGroup(groupId, userId, mode === "handover" ? successor : null);
       }
-      onLeft();
+      onLeft(deletes);
     } catch (err) {
       setError(friendlyError(err));
       setBusy(false);
@@ -192,10 +194,10 @@ export function LeaveSheet({
       onClose={onClose}
       body={
         mode === "alone"
-          ? "Je bent het enige lid. Als je de groep verlaat, worden de groep en alle trainingen definitief verwijderd."
+          ? "Je bent het enige lid. Als je de groep verlaat, worden de groep, alle trainingen en je gelogde sets daarin definitief verwijderd."
           : mode === "handover"
-            ? "Je bent de enige trainer. Kies eerst wie de groep overneemt, zodat er nog iemand trainingen kan plannen."
-            : "Je ziet de trainingen, activiteit en ranglijst van deze groep dan niet meer. Terugkomen kan via een nieuwe uitnodiging."
+            ? "Je bent de enige trainer. Kies eerst wie de groep overneemt, zodat er nog iemand trainingen kan plannen. Je eigen sets, records en ranks blijven bewaard."
+            : "Je ziet de trainingen, activiteit en ranglijst van deze groep dan niet meer. Je eigen sets, records en ranks blijven bewaard. Terugkomen kan via een nieuwe uitnodiging."
       }
     >
       {mode === "handover" && (

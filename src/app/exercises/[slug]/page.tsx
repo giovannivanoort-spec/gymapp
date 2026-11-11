@@ -14,6 +14,7 @@ import { GroupBest } from "@/components/planning/GroupBest";
 import { DataStatus } from "@/components/platform/DataStatus";
 import { MuscleList, useExerciseVideo, VideoPlayer } from "@/components/planning/ExerciseInfo";
 import { notify } from "@/components/planning/notify";
+import { RepRecordsGrid } from "@/components/progress/RepRecordsGrid";
 import { RankBadge, TierProgress } from "@/components/RankBadge";
 import { describeRank } from "@/components/RankRow";
 import { alternativesFor } from "@/lib/analysis";
@@ -289,6 +290,8 @@ export default function ExerciseDetailPage() {
                   </div>
                 </div>
               )}
+              {/* Kop in dezelfde stijl als "Beste set" en de grafiektitel in deze kaart. */}
+              <RepRecordsGrid sessions={sessions} headingClassName="font-semibold" />
               <ul className="divide-y divide-line">
                 {sessions.slice(0, 8).map((h) => (
                   <li key={h.sets[0].workoutExerciseId} className="text-sm">

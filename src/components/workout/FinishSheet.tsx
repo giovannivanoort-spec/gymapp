@@ -6,6 +6,7 @@ import { ArrowDownIcon, ArrowUpIcon, SparkleIcon, TrophyIcon } from "@/component
 import { Sheet } from "@/components/Sheet";
 import { EXERCISE_BY_SLUG, isTimed } from "@/lib/exercises";
 import { postFinished } from "@/lib/offlineQueue";
+import type { RepGain } from "@/lib/progress/records";
 import type { GroupMember, WorkoutExercise } from "@/lib/types";
 import {
   beats,
@@ -13,12 +14,15 @@ import {
   describeBest,
   doneSets,
   fmtBig,
+  fmtNum,
   fmtSet,
   isDone,
   logsBySlug,
   plannedSets,
   prevSessions,
+  repPRs,
   repsOf,
+  sessionCountsBySlug,
   volumeOf,
   type FullWorkout,
   type HistRow,
@@ -35,18 +39,34 @@ function loadShare(): boolean {
   }
 }
 
-/** Aantal records van iemand in deze training (ten opzichte van alle eerdere trainingen). */
+/**
+ * Aantal records van iemand in deze training (ten opzichte van alle eerdere trainingen): per
+ * oefening een 1RM-record, of anders een rep-record (zwaarder voor hetzelfde aantal reps). Zelfde
+ * regels als de voortgangspagina (sessionRecords), dus ook pas een rep-record na twee eerdere sessies.
+ */
 function countRecords(exercises: WorkoutExercise[], sets: LogRow[], history: HistRow[] | undefined): number | undefined {
   if (!history) return undefined;
   const before = logsBySlug(history);
+  const sessions = sessionCountsBySlug(history);
   const slugs = new Set(exercises.map((e) => e.exercise_slug));
   let n = 0;
   for (const slug of slugs) {
     const ids = new Set(exercises.filter((e) => e.exercise_slug === slug).map((e) => e.id));
-    const today = bestOf(sets.filter((l) => ids.has(l.workout_exercise_id)), slug);
-    if (today?.set && beats(today.set, bestOf(before.get(slug) ?? [], slug))) n++;
+    const todaySets = sets.filter((l) => ids.has(l.workout_exercise_id));
+    const prior = before.get(slug) ?? [];
+    const today = bestOf(todaySets, slug);
+    if (today?.set && beats(today.set, bestOf(prior, slug))) n++;
+    else if (repPRs(todaySets, prior, slug, sessions.get(slug) ?? 0).length > 0) n++;
   }
   return n;
+}
+
+/**
+ * "Nieuw 8RM: 80 kg (+5 kg)", of bij een lichaamsgewicht-oefening "Nieuw 5RM: +12,5 kg extra (+2,5 kg)".
+ */
+function repRecordLine(r: RepGain): string {
+  const weight = r.added ? `+${fmtNum(r.weight)} kg extra` : `${fmtNum(r.weight)} kg`;
+  return `Nieuw ${r.reps}RM: ${weight} (+${fmtNum(r.weight - r.previous)} kg)`;
 }
 
 /** "45 s", "2 min" of "2 min 30 s". */
@@ -71,6 +91,7 @@ export function FinishSheet({
   historyFor,
   canShareFor,
   nameOf,
+  isMember = true,
 }: {
   open: boolean;
   onClose: () => void;
@@ -87,6 +108,11 @@ export function FinishSheet({
   /** Mag "training afgerond" voor dit lid in de groepsfeed worden gezet? Zonder: niet delen. */
   canShareFor?: (uid: string) => boolean;
   nameOf: (uid: string) => string;
+  /**
+   * Is de kijker lid van de groep? Een ex-lid (groep verlaten) kan de groepspagina niet meer openen
+   * en niets in de groepsfeed zetten: dan alleen sluiten.
+   */
+  isMember?: boolean;
 }) {
   const [share, setShare] = useState(loadShare);
   const mine = logs.filter((l) => l.user_id === uid && isDone(l));
@@ -102,6 +128,7 @@ export function FinishSheet({
   const minutes = times.length >= 2 ? Math.round((Math.max(...times) - Math.min(...times)) / 60000) : null;
   const prev = prevSessions(history, workout.date);
   const allBefore = logsBySlug(history);
+  const earlierSessions = sessionCountsBySlug(history);
   const who = uid === userId ? "Jij" : nameOf(uid);
 
   const perExercise = exercises.map((we) => {
@@ -117,8 +144,11 @@ export function FinishSheet({
       else if (todayVol === 0 && prevVol === 0 && prevReps > 0) delta = (todayReps - prevReps) / prevReps;
     }
     const sessionBest = bestOf(sets, we.exercise_slug);
-    const record =
-      sessionBest?.set && beats(sessionBest.set, bestOf(allBefore.get(we.exercise_slug) ?? [], we.exercise_slug)) ? describeBest(sessionBest, we.exercise_slug) : null;
+    const prior = allBefore.get(we.exercise_slug) ?? [];
+    let record = sessionBest?.set && beats(sessionBest.set, bestOf(prior, we.exercise_slug)) ? describeBest(sessionBest, we.exercise_slug) : null;
+    // Geen 1RM-record: misschien wel zwaarder dan ooit voor een bepaald aantal reps.
+    const rep = record ? null : repPRs(sets, prior, we.exercise_slug, earlierSessions.get(we.exercise_slug) ?? 0)[0];
+    if (rep) record = repRecordLine(rep);
     return { we, sets, delta, record, name: EXERCISE_BY_SLUG[we.exercise_slug]?.name ?? we.exercise_slug };
   });
   const records = perExercise.filter((e) => e.record);
@@ -127,7 +157,7 @@ export function FinishSheet({
   )}`;
 
   // Wie er in de groepsfeed komt: jijzelf, of als trainer iedereen die vandaag sets heeft gedaan.
-  const sharers = canShareFor ? members.map((m) => m.user_id).filter((id) => canShareFor(id) && doneSets(logs, id) > 0) : [];
+  const sharers = canShareFor && isMember ? members.map((m) => m.user_id).filter((id) => canShareFor(id) && doneSets(logs, id) > 0) : [];
   const shareLabel =
     sharers.length === 0
       ? null
@@ -178,7 +208,9 @@ export function FinishSheet({
       <div className="space-y-5">
         {done === 0 ? (
           <div className="rounded-xl bg-surface-2 p-4 text-sm text-muted">
-            Nog geen sets gelogd. Rond een set af met de vinkknop, dan zie je hier je volume, records en de vergelijking met vorige keer.
+            {isMember
+              ? "Nog geen sets gelogd. Rond een set af met de vinkknop, dan zie je hier je volume, records en de vergelijking met vorige keer."
+              : "Je hebt in deze training geen sets afgerond."}
           </div>
         ) : (
           <>
@@ -283,9 +315,15 @@ export function FinishSheet({
               <span className="min-w-0">{shareLabel}</span>
             </label>
           )}
-          <Link href={`/groups/${workout.group_id}`} className="btn-primary w-full" onClick={shareFinished}>
-            Klaar, terug naar de groep
-          </Link>
+          {isMember ? (
+            <Link href={`/groups/${workout.group_id}`} className="btn-primary w-full" onClick={shareFinished}>
+              Klaar, terug naar de groep
+            </Link>
+          ) : (
+            <button type="button" className="btn-primary w-full" onClick={onClose}>
+              Sluiten
+            </button>
+          )}
         </div>
       </div>
     </Sheet>

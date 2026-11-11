@@ -1,5 +1,6 @@
 import { isTimed } from "@/lib/exercises";
 import type { FailedOp, QueuedOp } from "@/lib/offlineQueue";
+import { heaviestPerRepCount, REP_PR_MIN_SESSIONS, repGains, repRecordMode, type RepGain } from "@/lib/progress/records";
 import { assistedScore, estimate1RM, formatRankAmount, formatRankBest, isAssisted, maxRepsFor, rankExercise, type LogLike, type Sex } from "@/lib/ranks";
 import type { GroupMember, SetLog, Workout, WorkoutExercise } from "@/lib/types";
 
@@ -171,6 +172,18 @@ export function logsBySlug(rows: HistRow[] | undefined): Map<string, LogLike[]> 
   return map;
 }
 
+/** Aantal eerdere sessies (oefening-in-training met minstens één gelogde set) per oefening. */
+export function sessionCountsBySlug(rows: HistRow[] | undefined): Map<string, number> {
+  const ids = new Map<string, Set<string>>();
+  for (const r of rows ?? []) {
+    if (r.r == null) continue;
+    const set = ids.get(r.s);
+    if (set) set.add(r.x);
+    else ids.set(r.s, new Set([r.x]));
+  }
+  return new Map([...ids].map(([slug, set]) => [slug, set.size]));
+}
+
 export type Best = {
   e1rm: number | null;
   weight: number;
@@ -251,6 +264,23 @@ export function beats(value: LogLike, before: Best | null): boolean {
   if (e != null && before.e1rm != null) return e > before.e1rm + 1e-6;
   if (w > 0) return before.weight > 0 && w > before.weight;
   return before.reps > 0 && r > before.reps;
+}
+
+/**
+ * Rep-records van vandaag: per herhalingsaantal (REP_COUNTS) het zwaarste gewicht voor minstens
+ * N reps, als dat minstens repPRMinGain(vorige) zwaarder is dan het beste uit eerdere trainingen.
+ * Grootste winst eerst (gelijk: hoger aantal reps). Zelfde regels als sessionRecords op de
+ * voortgangspagina: niet waar rep-records niet gelden (repRecordMode: zonder gewicht, assisted,
+ * statisch, scoort op zwaarste set, band) en pas met minstens REP_PR_MIN_SESSIONS eerdere sessies
+ * (`earlierSessions`, zie sessionCountsBySlug). Bij lichaamsgewicht-oefeningen gaat het om extra gewicht.
+ */
+export function repPRs(today: LogLike[], before: LogLike[], slug: string | null | undefined, earlierSessions: number): RepGain[] {
+  if (earlierSessions < REP_PR_MIN_SESSIONS) return [];
+  // "Met gewicht" zoals isWeighted op de voortgangspagina: minstens één set met een geldige 1RM-schatting.
+  const weighted = [...before, ...today].some((l) => estimate1RM(Number(l.weight ?? 0), l.reps ?? 0) != null);
+  const mode = repRecordMode(slug, weighted);
+  if (!mode) return [];
+  return repGains(heaviestPerRepCount(today, mode), heaviestPerRepCount(before, mode), mode);
 }
 
 export type Profile = { bodyweight: number | null; sex: Sex | null; age: number | null };

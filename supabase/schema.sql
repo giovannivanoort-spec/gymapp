@@ -113,6 +113,27 @@ returns uuid language sql stable security definer set search_path = public as $$
   select w.group_id from workout_exercises we join workouts w on w.id = we.workout_id where we.id = weid;
 $$;
 
+-- Heb ik zelf sets gelogd in deze oefening / training? Zo blijven je eigen sets (en de oefening en
+-- training eromheen) leesbaar nadat je een groep hebt verlaten. Kijkt alleen naar je eigen rijen.
+-- Zelfde functies als in upgrade-own-history.sql.
+create or replace function public.own_logged_wex(weid uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (select 1 from set_logs where workout_exercise_id = weid and user_id = (select auth.uid()));
+$$;
+
+create or replace function public.own_logged_workout(wid uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1 from set_logs sl join workout_exercises we on we.id = sl.workout_exercise_id
+    where we.workout_id = wid and sl.user_id = (select auth.uid())
+  );
+$$;
+
+revoke execute on function public.own_logged_wex(uuid) from public, anon;
+revoke execute on function public.own_logged_workout(uuid) from public, anon;
+grant execute on function public.own_logged_wex(uuid) to authenticated;
+grant execute on function public.own_logged_workout(uuid) to authenticated;
+
 -- Profiel aanmaken bij registratie.
 create or replace function public.handle_new_user()
 returns trigger language plpgsql security definer set search_path = public as $$
@@ -211,10 +232,11 @@ drop policy if exists "members delete" on public.group_members;
 create policy "members delete" on public.group_members for delete to authenticated
   using (public.is_trainer(group_id) or user_id = auth.uid());
 
--- workouts
+-- workouts (leesregels: ook trainingen waarin je zelf sets hebt gelogd, ook na het verlaten van de
+-- groep; friends.sql voegt daar trainingen van vrienden aan toe)
 drop policy if exists "workouts read" on public.workouts;
 create policy "workouts read" on public.workouts for select to authenticated
-  using (public.is_member(group_id));
+  using (public.is_member(group_id) or public.own_logged_workout(id));
 drop policy if exists "workouts write" on public.workouts;
 create policy "workouts write" on public.workouts for all to authenticated
   using (public.is_trainer(group_id)) with check (public.is_trainer(group_id));
@@ -222,7 +244,7 @@ create policy "workouts write" on public.workouts for all to authenticated
 -- workout_exercises
 drop policy if exists "wex read" on public.workout_exercises;
 create policy "wex read" on public.workout_exercises for select to authenticated
-  using (public.is_member(public.workout_group(workout_id)));
+  using (public.is_member(public.workout_group(workout_id)) or public.own_logged_wex(id));
 drop policy if exists "wex write" on public.workout_exercises;
 create policy "wex write" on public.workout_exercises for all to authenticated
   using (public.is_trainer(public.workout_group(workout_id)))
@@ -230,9 +252,10 @@ create policy "wex write" on public.workout_exercises for all to authenticated
 
 -- set_logs: iedereen in de groep ziet ze, je schrijft je eigen sets.
 -- Een trainer mag ook sets invullen voor groepsleden (handig als je iemand traint).
+-- Je eigen sets blijf je altijd zien (ook na het verlaten van de groep), maar schrijven kan alleen als lid.
 drop policy if exists "sets read" on public.set_logs;
 create policy "sets read" on public.set_logs for select to authenticated
-  using (public.is_member(public.workout_exercise_group(workout_exercise_id)));
+  using (user_id = (select auth.uid()) or public.is_member(public.workout_exercise_group(workout_exercise_id)));
 drop policy if exists "sets write" on public.set_logs;
 create policy "sets write" on public.set_logs for all to authenticated
   using (

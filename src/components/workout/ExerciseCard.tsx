@@ -36,6 +36,7 @@ export function ExerciseCard({
   userId,
   isTrainer,
   canComment,
+  hideComments,
   groupMode,
   loading,
   onSave,
@@ -57,6 +58,8 @@ export function ExerciseCard({
   userId: string;
   isTrainer: boolean;
   canComment: boolean;
+  /** Geen opmerkingen tonen: wie geen groepslid is, kan ze niet lezen (een lege lijst zou misleiden). */
+  hideComments?: boolean;
   groupMode: boolean;
   /** Sets worden nog geladen. */
   loading?: boolean;
@@ -214,32 +217,34 @@ export function ExerciseCard({
         </div>
       )}
 
-      <div className="border-t border-line pt-2">
-        <button
-          className="-ml-1 inline-flex min-h-10 items-center gap-1.5 rounded-lg px-1 text-sm text-muted hover:text-ink"
-          onClick={() => setShowComments((v) => !v)}
-          aria-expanded={showComments}
-          aria-controls={commentsId}
-        >
-          <ChatIcon size={15} />
-          {comments.length > 0 ? `${comments.length} opmerking${comments.length === 1 ? "" : "en"}` : canComment ? "Opmerking plaatsen" : "Geen opmerkingen"}
-        </button>
-        {showComments && (
-          <div id={commentsId} className="animate-fade-in mt-2">
-            <CommentThread
-              workoutId={we.workout_id}
-              workoutExerciseId={we.id}
-              comments={comments}
-              userId={userId}
-              isTrainer={isTrainer}
-              canPost={canComment}
-              nameOf={nameOf}
-              onChange={onCommentsChange}
-              onError={onError}
-            />
-          </div>
-        )}
-      </div>
+      {!hideComments && (
+        <div className="border-t border-line pt-2">
+          <button
+            className="-ml-1 inline-flex min-h-10 items-center gap-1.5 rounded-lg px-1 text-sm text-muted hover:text-ink"
+            onClick={() => setShowComments((v) => !v)}
+            aria-expanded={showComments}
+            aria-controls={commentsId}
+          >
+            <ChatIcon size={15} />
+            {comments.length > 0 ? `${comments.length} opmerking${comments.length === 1 ? "" : "en"}` : canComment ? "Opmerking plaatsen" : "Geen opmerkingen"}
+          </button>
+          {showComments && (
+            <div id={commentsId} className="animate-fade-in mt-2">
+              <CommentThread
+                workoutId={we.workout_id}
+                workoutExerciseId={we.id}
+                comments={comments}
+                userId={userId}
+                isTrainer={isTrainer}
+                canPost={canComment}
+                nameOf={nameOf}
+                onChange={onCommentsChange}
+                onError={onError}
+              />
+            </div>
+          )}
+        </div>
+      )}
     </li>
   );
 }

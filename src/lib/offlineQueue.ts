@@ -155,6 +155,22 @@ export function dropForWex(wexIds: ReadonlySet<string>): number {
   return sets.size;
 }
 
+/**
+ * Na het verlaten (of verwijderen) van een groep: alles weghalen wat nog voor die groep wachtte. Sets
+ * van de oefeningen `wexIds` (wachtend of mislukt) kunnen niet meer worden opgeslagen, en records of
+ * "training afgerond" voor de groepsfeed niet meer worden geplaatst. Geeft het aantal sets terug.
+ */
+export function dropForGroup(groupId: string, wexIds: ReadonlySet<string>): number {
+  const n = dropForWex(wexIds);
+  const acts = readActivities();
+  const keepActs = acts.filter((a) => a.activity.groupId !== groupId && !wexIds.has(a.set.workout_exercise_id));
+  if (keepActs.length !== acts.length) writeJson(ACTIVITY_KEY, keepActs);
+  const fin = readFinished();
+  const keepFin = fin.filter((f) => f.activity.groupId !== groupId);
+  if (keepFin.length !== fin.length) writeJson(FINISHED_KEY, keepFin);
+  return n;
+}
+
 /** Zet een set (opnieuw) op de lijst met mislukte sets, met een Nederlandse foutmelding. */
 export function markFailed(op: QueuedOp, error: unknown) {
   const key = keyOf(op);

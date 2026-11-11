@@ -458,9 +458,13 @@ export const TOOLS = [
       limit: z.number().int().min(1).max(50).optional(),
     }),
     run: async ({ group_id, from, to, limit = 20 }, { sb }) => {
+      // Alleen groepen waar de gebruiker nu lid van is: de ledenlijst is alleen voor leden leesbaar.
+      // Zonder dit filter zou een verlaten groep die hij zelf aanmaakte hier nog als de zijne staan.
       let q = sb
         .from("workouts")
-        .select("id, date, title, notes, groups!inner(name), workout_exercises(exercise_slug, position, target_sets, target_reps)")
+        .select(
+          "id, date, title, notes, groups!inner(name, group_members!inner(user_id)), workout_exercises(exercise_slug, position, target_sets, target_reps)",
+        )
         .order("date", { ascending: false })
         .limit(limit);
       if (group_id) q = q.eq("group_id", group_id);
@@ -484,9 +488,11 @@ export const TOOLS = [
   tool({
     name: "get_workout",
     description:
-      "Alle details van één training: oefeningen met doelen, de gelogde sets (kg × reps) van ieder groepslid, en de opmerkingen.",
+      "Alle details van één training: oefeningen met doelen, de gelogde sets (kg × reps) van ieder groepslid, en de opmerkingen. " +
+      "Is de gebruiker geen lid (meer) van de groep, dan alleen de oefeningen met zijn eigen sets of die van vrienden, zonder " +
+      "opmerkingen (zie access_note); dat anderen dan ontbreken, betekent niet dat ze niets hebben gelogd.",
     schema: z.object({ workout_id: z.string().uuid() }),
-    run: async ({ workout_id }, { sb }) => {
+    run: async ({ workout_id }, { sb, userId }) => {
       const { data: w, error } = await sb
         .from("workouts")
         .select("id, date, title, notes, group_id, groups(name), workout_exercises(id, exercise_slug, position, target_sets, target_reps, notes)")
@@ -501,9 +507,32 @@ export const TOOLS = [
         sb.from("comments").select("workout_exercise_id, body, created_at, profiles(display_name)").eq("workout_id", workout_id).order("created_at"),
         sb.from("group_members").select("user_id, profiles(display_name)").eq("group_id", w.group_id),
       ]);
-      const name = (uid: string) =>
-        (members.data ?? []).find((m) => m.user_id === uid)?.profiles as unknown as { display_name: string } | undefined;
+      // Namen: eerst de groepsleden. Wie geen lid (meer) is, ziet de leden niet: dan de eigen sets als
+      // "Jij" en die van vrienden via hun profiel, zodat er nooit een los id in het antwoord staat.
+      const names = new Map<string, string>();
+      for (const m of members.data ?? []) {
+        const n = (m.profiles as unknown as { display_name: string } | null)?.display_name;
+        if (n) names.set(m.user_id, n);
+      }
+      const unknown = [...new Set((logs.data ?? []).map((l) => l.user_id))].filter((uid) => uid !== userId && !names.has(uid));
+      if (unknown.length) {
+        const { data: profiles } = await sb.from("profiles").select("id, display_name").in("id", unknown);
+        for (const p of profiles ?? []) if (p.display_name) names.set(p.id, p.display_name);
+      }
+      let anonymous = 0;
+      for (const uid of unknown) if (!names.has(uid)) names.set(uid, `Onbekend ${++anonymous}`);
+      const label = (uid: string) => (uid === userId ? `Jij${names.has(uid) ? ` (${names.get(uid)})` : ""}` : (names.get(uid) ?? "Onbekend"));
+      // Leden zien zichzelf in group_members; wie dat niet doet, kijkt als vriend of ex-lid mee.
+      // Bij een fout bij het ophalen van de leden geen conclusie trekken.
+      const notMember = !members.error && !(members.data ?? []).some((m) => m.user_id === userId);
       return {
+        ...(!notMember
+          ? {}
+          : {
+              access_note:
+                "Geen lid (meer) van deze groep: alleen je eigen sets en die van vrienden zijn zichtbaar, zonder opmerkingen. " +
+                "Andere groepsleden kunnen wel sets hebben gelogd.",
+            }),
         date: w.date,
         title: w.title,
         group: (w.groups as unknown as { name: string } | null)?.name,
@@ -518,7 +547,7 @@ export const TOOLS = [
               target: `${we.target_sets}×${we.target_reps}`,
               trainer_note: we.notes,
               logged: Object.fromEntries(
-                byUser.map((uid) => [name(uid)?.display_name ?? uid, fmtSets(mine.filter((l) => l.user_id === uid))]),
+                byUser.map((uid) => [label(uid), fmtSets(mine.filter((l) => l.user_id === uid))]),
               ),
               comments: (comments.data ?? [])
                 .filter((c) => c.workout_exercise_id === we.id)

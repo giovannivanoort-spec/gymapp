@@ -3,6 +3,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { getCached, invalidate, setCached, useCached } from "./cache";
 import { sessionsBySlug, type HistorySet } from "./history";
+import { isWeighted, sessionRecords } from "./progress/records";
 import { errorMessage, isMissingSchemaError, supabase } from "./supabase";
 import { PUBLIC_PROFILE_COLUMNS, PUBLIC_PROFILE_COLUMNS_NO_PHOTO, type Profile } from "./types";
 
@@ -475,8 +476,17 @@ export type PersonalRecord = {
   slug: string;
   date: string;
   workoutId: string;
+  /**
+   * "e1rm": hogere geschatte 1RM (zonder gewicht: meer reps of seconden). "rep": zwaarder dan ooit
+   * voor minstens `reps` herhalingen (rep-record), zonder dat de geschatte 1RM steeg.
+   */
+  kind: "e1rm" | "rep";
+  /** Bij een rep-record: het herhalingsaantal (bijv. 8 voor een 8RM-record). */
+  reps?: number;
+  /** Bij een rep-record van een lichaamsgewicht-oefening: `value` en `previous` zijn extra gewicht. */
+  added?: boolean;
   unit: "kg" | "reps";
-  /** Geschatte 1RM (kg) of aantal reps. */
+  /** Geschatte 1RM (kg), gewicht van het rep-record (kg) of aantal reps. */
   value: number;
   /** Vorige beste waarde. */
   previous: number;
@@ -485,28 +495,21 @@ export type PersonalRecord = {
 };
 
 /**
- * Persoonlijke records: sessies waarin iemand zijn eerdere beste prestatie op een oefening verbeterde
- * (geschatte 1RM, of max reps bij oefeningen zonder gewicht). De eerste keer telt niet als record.
+ * Persoonlijke records: sessies waarin iemand zijn eerdere beste prestatie op een oefening verbeterde.
+ * Zelfde regels als de eigen voortgangspagina (sessionRecords): een hogere geschatte 1RM (zonder
+ * gewicht: meer reps of seconden), of anders een rep-record. De eerste keer telt niet als record.
  * Nieuwste eerst.
  */
 export function personalRecords(history: HistorySet[]): PersonalRecord[] {
   const out: PersonalRecord[] = [];
   for (const [slug, sessions] of sessionsBySlug(history.filter((s) => (s.reps ?? 0) > 0))) {
-    let bestKg: number | null = null;
-    let bestReps: number | null = null;
-    for (const s of sessions) {
-      if (s.best1RM != null) {
-        if (bestKg != null && s.best1RM > bestKg) {
-          out.push({ slug, date: s.date, workoutId: s.workoutId, unit: "kg", value: s.best1RM, previous: bestKg, set: s.bestSet });
-        }
-        bestKg = Math.max(bestKg ?? 0, s.best1RM);
-      } else if (bestKg == null) {
-        if (bestReps != null && s.maxReps > bestReps) {
-          out.push({ slug, date: s.date, workoutId: s.workoutId, unit: "reps", value: s.maxReps, previous: bestReps, set: s.bestSet });
-        }
-        bestReps = Math.max(bestReps ?? 0, s.maxReps);
-      }
-    }
+    const weighted = isWeighted(sessions);
+    sessionRecords(slug, sessions, weighted).forEach((r, i) => {
+      if (!r) return;
+      const base = { slug, date: sessions[i].date, workoutId: sessions[i].workoutId, previous: r.previous, set: r.set };
+      if (r.kind === "e1rm") out.push({ ...base, kind: "e1rm", unit: weighted ? "kg" : "reps", value: r.value });
+      else out.push({ ...base, kind: "rep", reps: r.reps, added: r.added, unit: "kg", value: r.weight });
+    });
   }
   return out.sort((a, b) => b.date.localeCompare(a.date));
 }

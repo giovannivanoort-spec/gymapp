@@ -6,6 +6,8 @@ import { Suspense, useCallback, useEffect, useEffectEvent, useLayoutEffect, useM
 import { AppShell } from "@/components/AppShell";
 import { useUserId } from "@/components/AuthProvider";
 import { Celebration, type CelebrationData } from "@/components/Celebration";
+import { ConfirmSheet } from "@/components/groups/ConfirmSheet";
+import { forgetRemovedGroup } from "@/components/groups/groupData";
 import { CalendarIcon, CheckIcon, ChevronRightIcon, UsersIcon } from "@/components/Icons";
 import { CommentThread } from "@/components/workout/CommentThread";
 import { commentsKey, fetchComments, fetchLogs, fetchWorkout, logsKey, useHistories, useLoad, workoutKey } from "@/components/workout/data";
@@ -53,6 +55,7 @@ import { EXERCISE_BY_SLUG } from "@/lib/exercises";
 import { invalidateHistory } from "@/lib/history";
 import {
   dequeue,
+  dropForWex,
   enqueue,
   enqueueActivity,
   flushQueue,
@@ -80,6 +83,23 @@ const ON_CONFLICT = "workout_exercise_id,user_id,set_number";
 /** Record of promotie die nog niet kon worden bepaald (geschiedenis van die persoon nog niet geladen). */
 type PendingAnnouncement = { we: WorkoutExercise; uid: string; n: number; value: LogLike };
 type Check = JumpCheckItem & { key: string };
+
+/**
+ * Aanvulling als een deel van de sets die niet meer kunnen worden opgeslagen, voor anderen is
+ * ingevuld (een trainer die de groep verliet): die staan niet in beeld, maar gaan wel mee bij weggooien.
+ * " Eén daarvan is voor iemand anders ingevuld en staat hier niet." of een lege tekst.
+ */
+function othersNote(total: number, others: number): string {
+  if (others === 0) return "";
+  if (others === total) {
+    return total === 1
+      ? " Deze is voor iemand anders ingevuld en staat hier niet."
+      : " Deze zijn voor anderen ingevuld en staan hier niet.";
+  }
+  return others === 1
+    ? " Eén daarvan is voor iemand anders ingevuld en staat hier niet."
+    : ` ${others} daarvan zijn voor anderen ingevuld en staan hier niet.`;
+}
 
 /** Onder de vaste kop van de app (iets overlappend, de kop ligt erboven). */
 const STICKY_TOP = "top-[calc(max(0.75rem,env(safe-area-inset-top))+2.75rem)]";
@@ -125,7 +145,10 @@ function Workout() {
   const bundle = wk.data;
   const workout = bundle?.workout;
   const members = bundle?.members ?? NO_MEMBERS;
-  const cm = useLoad(commentsKey(id), () => fetchComments(id), { persist: true, maxAge: 5_000 });
+  // Opmerkingen zijn alleen voor groepsleden leesbaar: voor een vriend of ex-lid niet ophalen (de
+  // server geeft dan altijd een lege lijst). Zolang de training nog laadt, wel alvast (meestal een lid).
+  const commentsReadable = !bundle || bundle.members.some((m) => m.user_id === userId);
+  const cm = useLoad(commentsReadable ? commentsKey(id) : null, () => fetchComments(id), { persist: true, maxAge: 5_000 });
   const comments = cm.data ?? NO_COMMENTS;
 
   // Sets: lokale staat (voor directe updates), bewaard in de cache zodat de pagina offline werkt.
@@ -191,6 +214,23 @@ function Workout() {
   const me = members.find((m) => m.user_id === userId);
   const isMember = !!me;
   const isTrainer = me?.role === "trainer";
+  /**
+   * Door een trainer uit de groep gehaald: de bewaarde kopie had je nog als lid, de server geeft
+   * geen leden meer terug (die zijn alleen voor leden leesbaar). Dan de groep en zijn andere bewaarde
+   * trainingen hier al vergeten, net als bij zelf verlaten, zodat een offline kopie daarvan niet meer
+   * bewerkbaar lijkt. Deze training blijft staan (alleen-lezen, met de keuze om wachtende sets weg te gooien).
+   */
+  const memberOfGroup = useRef<string | null>(null);
+  useEffect(() => {
+    if (!bundle || !userId) return;
+    const groupId = bundle.workout.group_id;
+    if (bundle.members.some((m) => m.user_id === userId)) {
+      memberOfGroup.current = groupId;
+    } else if (memberOfGroup.current === groupId && bundle.members.length === 0) {
+      memberOfGroup.current = null;
+      forgetRemovedGroup(groupId, userId, id);
+    }
+  }, [bundle, userId, id]);
   const [selectedUser, setSelectedUser] = useState<string | null>(linkedPerson);
   const [groupMode, setGroupMode] = useState(false);
   // Nieuwe link naar dezelfde training (bijv. een andere chip op Home): die persoon tonen.
@@ -276,6 +316,8 @@ function Workout() {
   const checkSeq = useRef(0);
   const closeCheck = useCallback((cid: number) => setChecks((q) => q.filter((c) => c.id !== cid)), []);
   const [finishOpen, setFinishOpen] = useState(false);
+  /** Bevestiging voor het weggooien van sets die niet meer kunnen worden opgeslagen (geen lid meer). */
+  const [discardOpen, setDiscardOpen] = useState(false);
   /** Records die wachten tot de geschiedenis van die persoon binnen is. */
   const pendingAnnouncements = useRef<PendingAnnouncement[]>([]);
   /** Records in de feed die opnieuw moeten worden nagekeken zodra offline bewerkingen zijn verstuurd. */
@@ -920,11 +962,45 @@ function Workout() {
     );
   const nextPerson = switcher && !showGroup ? nextFor(viewCard) : undefined;
   const failedHere = allLogs.filter((l) => l.failed).length;
+  /**
+   * Geen lid meer (groep verlaten of verwijderd), maar wel eigen sets in deze training: die blijven
+   * zichtbaar (upgrade-own-history.sql). De groep zelf, de leden en de opmerkingen niet.
+   * Alleen bepaald op sets van de server (of de bewaarde kopie daarvan), niet op wat er nog in de
+   * offline wachtrij staat. Zonder sets (nog aan het laden, of laden mislukt) is het nog onbekend:
+   * dan staat er geen van beide meldingen.
+   */
+  const viewerKnown = !isMember && serverLogs !== undefined;
+  const formerMember = viewerKnown && members.length === 0 && serverLogs.some((l) => l.user_id === userId);
+  /**
+   * Een ex-lid dat bevriend is met iemand in deze training, krijgt via die vriendschap ook de
+   * oefeningen die alleen die vriend deed. Die zouden hier als lege kaarten staan, terwijl de melding
+   * zegt dat je alleen je eigen sets ziet: alleen de oefeningen met eigen sets tonen. Ook sets die nog
+   * op dit toestel wachten tellen mee, zodat die zichtbaar zijn (en weggegooid kunnen worden).
+   */
+  const shownExercises = formerMember
+    ? exercises.filter((e) => allLogs.some((l) => l.user_id === userId && l.workout_exercise_id === e.id))
+    : exercises;
+  /**
+   * Voor wie geen lid (meer) is: wachtende of mislukte sets in deze training, die de server nooit
+   * meer aanneemt. Precies deze worden bij "Weggooien" weggehaald (alle oefeningen van de training).
+   * Een trainer die de groep verliet, kan ook nog sets hebben staan die hij voor anderen invulde:
+   * die worden hier niet getoond (je ziet alleen je eigen sets), dus apart geteld en genoemd.
+   */
+  const unsaveable = isMember ? NO_LOGS : allLogs.filter((l) => l.failed || l.pending);
+  const unsaveableHere = unsaveable.length;
+  const unsaveableOthers = unsaveable.filter((l) => l.user_id !== userId).length;
+  const unsaveableNote = othersNote(unsaveableHere, unsaveableOthers);
+  // Is er intussen niets meer weg te gooien (bijv. via Opslag in de instellingen), dan ook de
+  // bevestiging dicht, zodat die niet vanzelf weer opent als er later iets bijkomt.
+  if (discardOpen && unsaveableHere === 0) setDiscardOpen(false);
+  /** Voor een ex-lid alleen sets die echt op de server staan: wat niet meer kan worden opgeslagen, telt niet mee. */
+  const summaryLogs = isMember ? allLogs : allLogs.filter((l) => !l.pending && !l.failed);
 
   return (
     <AppShell
       title={workout.title}
-      back={`/groups/${workout.group_id}`}
+      // De groepspagina is alleen voor leden: een vriend of ex-lid gaat terug naar waar hij vandaan kwam.
+      back={isMember ? `/groups/${workout.group_id}` : true}
       action={
         isTrainer && (
           <Link href={`/groups/${workout.group_id}/plan?edit=${workout.id}`} className="btn-ghost px-3 py-1.5 text-xs">
@@ -1054,9 +1130,20 @@ function Workout() {
             />
           </div>
         ) : !isMember ? (
-          <p className="rounded-xl border border-line bg-surface-2 px-3 py-2 text-sm text-muted">
-            Je bekijkt deze training als vriend. Alleen groepsleden kunnen sets invullen.
-          </p>
+          // Pas de precieze melding als de sets er zijn: pas dan is duidelijk of dit een vriend of een
+          // ex-lid is. Mislukt het laden (en is er geen bewaarde kopie), dan een neutrale uitleg waarom
+          // er niets in te vullen is; tijdens het laden een plaatshouder op de plek van de melding.
+          viewerKnown || logsError ? (
+            <p className="rounded-xl border border-line bg-surface-2 px-3 py-2 text-sm text-muted">
+              {!viewerKnown
+                ? "Alleen groepsleden kunnen sets invullen."
+                : formerMember
+                  ? "Je zit niet meer in deze groep. Je ziet alleen je eigen sets."
+                  : "Je bekijkt deze training als vriend. Alleen groepsleden kunnen sets invullen."}
+            </p>
+          ) : (
+            <div className="skeleton h-9 rounded-xl" aria-hidden />
+          )
         ) : forUser !== userId && isTrainer ? (
           <p className="rounded-xl border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn">
             Je vult nu sets in voor <strong>{nameOf(forUser)}</strong>.
@@ -1070,7 +1157,9 @@ function Workout() {
         {logsError && (
           <div className="flex items-center justify-between gap-3 rounded-xl border border-line bg-surface-2 px-3 py-2 text-sm" role="status">
             <span className="text-muted">
-              {serverLogs ? "Geen verbinding: je ziet de laatst bekende sets. Wat je invult wordt bewaard." : "Sets konden niet worden geladen. Wat je invult wordt bewaard."}
+              {serverLogs ? "Geen verbinding: je ziet de laatst bekende sets." : "Sets konden niet worden geladen."}
+              {/* Alleen een lid kan hier iets invullen. */}
+              {isMember && " Wat je invult wordt bewaard."}
             </span>
             <button className="min-h-10 shrink-0 font-semibold text-accent" onClick={reloadLogs}>
               Opnieuw
@@ -1078,11 +1167,43 @@ function Workout() {
           </div>
         )}
 
-        {failedHere > 0 && (
-          <p className="rounded-xl border border-danger/40 bg-danger/5 px-3 py-2 text-sm text-danger" role="alert">
-            {failedHere === 1 ? "Eén set kon" : `${failedHere} sets konden`} niet worden opgeslagen. Tik op het pijltje bij de set om het opnieuw te
-            proberen.
-          </p>
+        {isMember
+          ? failedHere > 0 && (
+              <p className="rounded-xl border border-danger/40 bg-danger/5 px-3 py-2 text-sm text-danger" role="alert">
+                {failedHere === 1 ? "Eén set kon" : `${failedHere} sets konden`} niet worden opgeslagen. Tik op het pijltje bij de set om het opnieuw
+                te proberen.
+              </p>
+            )
+          : // Geen lid meer, maar er wachtten nog sets (offline ingevuld, of mislukt) voor deze training: die
+            // kunnen nooit meer worden opgeslagen. Uitleggen en laten weggooien in plaats van "opnieuw proberen".
+            unsaveableHere > 0 && (
+              <div
+                className="flex items-center justify-between gap-3 rounded-xl border border-danger/40 bg-danger/5 px-3 py-2 text-sm"
+                role="alert"
+              >
+                <span className="text-danger">
+                  {unsaveableHere === 1 ? "Eén set kan" : `${unsaveableHere} sets kunnen`} niet meer worden opgeslagen: je zit niet meer in deze
+                  groep.{unsaveableNote}
+                </span>
+                <button className="min-h-10 shrink-0 font-semibold text-accent" onClick={() => setDiscardOpen(true)}>
+                  Weggooien
+                </button>
+              </div>
+            )}
+        {!isMember && (
+          <ConfirmSheet
+            open={discardOpen && unsaveableHere > 0}
+            title={unsaveableHere === 1 ? "Set weggooien?" : `${unsaveableHere} sets weggooien?`}
+            body={`${unsaveableHere === 1 ? "Deze set kan" : "Deze sets kunnen"} niet meer worden opgeslagen, omdat je niet meer in deze groep zit.${unsaveableNote} Weggooien kan niet ongedaan worden gemaakt.`}
+            confirmLabel="Weggooien"
+            danger
+            onClose={() => setDiscardOpen(false)}
+            onConfirm={() => {
+              const n = dropForWex(wexSet);
+              setDiscardOpen(false);
+              toast.success(n === 1 ? "Set weggegooid" : "Sets weggegooid");
+            }}
+          />
         )}
 
         {exercises.length === 0 ? (
@@ -1099,7 +1220,7 @@ function Workout() {
           </div>
         ) : (
           <ol className="space-y-4">
-            {exercises.map((we, i) => (
+            {shownExercises.map((we, i) => (
               <ExerciseCard
                 key={we.id}
                 index={i}
@@ -1115,6 +1236,7 @@ function Workout() {
                 userId={userId}
                 isTrainer={isTrainer}
                 canComment={isMember}
+                hideComments={!isMember}
                 groupMode={showGroup}
                 loading={loadingLogs}
                 onSave={saveSet}
@@ -1129,7 +1251,8 @@ function Workout() {
           </ol>
         )}
 
-        {exercises.length > 0 && (
+        {/* Leden, en vrienden zoals voorheen; voor een ex-lid de knop hieronder (pas na het laden bekend). */}
+        {exercises.length > 0 && (isMember || (viewerKnown && !formerMember)) && (
           <button
             className={`${allDone ? "btn-primary" : "btn-ghost"} w-full py-3 text-base`}
             onClick={() => setFinishOpen(true)}
@@ -1139,22 +1262,31 @@ function Workout() {
             {allDone ? "Training afgerond, bekijk samenvatting" : `Training afronden (${myDone}/${myPlanned} sets)`}
           </button>
         )}
+        {/* Ex-lid: alleen terugkijken, zonder "afronden" of een teller van sets die niet meer kunnen. */}
+        {exercises.length > 0 && formerMember && (
+          <button className="btn-ghost w-full py-3 text-base" onClick={() => setFinishOpen(true)}>
+            Samenvatting bekijken
+          </button>
+        )}
 
-        <section className="card space-y-3">
-          <h2 className="font-bold">Opmerkingen bij de training</h2>
-          {cm.error && comments.length === 0 && <p className="text-sm text-muted">Opmerkingen konden niet worden geladen.</p>}
-          <CommentThread
-            workoutId={workout.id}
-            workoutExerciseId={null}
-            comments={comments.filter((c) => c.workout_exercise_id === null)}
-            userId={userId}
-            isTrainer={isTrainer}
-            canPost={isMember}
-            nameOf={nameOf}
-            onChange={cm.retry}
-            onError={showError}
-          />
-        </section>
+        {/* Opmerkingen zijn alleen voor groepsleden leesbaar: een vriend of ex-lid zou hier altijd een lege lijst zien. */}
+        {isMember && (
+          <section className="card space-y-3">
+            <h2 className="font-bold">Opmerkingen bij de training</h2>
+            {cm.error && comments.length === 0 && <p className="text-sm text-muted">Opmerkingen konden niet worden geladen.</p>}
+            <CommentThread
+              workoutId={workout.id}
+              workoutExerciseId={null}
+              comments={comments.filter((c) => c.workout_exercise_id === null)}
+              userId={userId}
+              isTrainer={isTrainer}
+              canPost={isMember}
+              nameOf={nameOf}
+              onChange={cm.retry}
+              onError={showError}
+            />
+          </section>
+        )}
       </div>
 
       {finishOpen && (
@@ -1162,9 +1294,10 @@ function Workout() {
           open
           onClose={() => setFinishOpen(false)}
           workout={workout}
-          exercises={exercises}
+          exercises={shownExercises}
           members={members}
-          logs={allLogs}
+          isMember={isMember}
+          logs={summaryLogs}
           uid={forUser}
           userId={userId}
           history={histories[forUser]}

@@ -77,9 +77,19 @@ export function WithSummaries({
   );
 }
 
-/** Korte omschrijving van een record, bijv. "Bankdrukken 100 kg × 5". */
-export function prLabel(pr: { slug: string; set: { weight: number | null; reps: number | null } }) {
-  return `${EXERCISE_BY_SLUG[pr.slug]?.name ?? pr.slug} ${formatSet(pr.set)}`;
+/**
+ * Korte omschrijving van een record, oefening eerst: "PR Bankdrukken 100 kg × 5", of bij een
+ * rep-record "Bankdrukken 8RM-record · 80 kg × 10" (de set kan meer reps hebben dan het aantal
+ * van het record: het is het zwaarste gewicht voor minstens zoveel reps).
+ */
+export function prLabel(pr: {
+  slug: string;
+  kind: "e1rm" | "rep";
+  reps?: number;
+  set: { weight: number | null; reps: number | null };
+}) {
+  const name = EXERCISE_BY_SLUG[pr.slug]?.name ?? pr.slug;
+  return pr.kind === "rep" ? `${name} ${pr.reps}RM-record · ${formatSet(pr.set)}` : `PR ${name} ${formatSet(pr.set)}`;
 }
 
 /** Rij in de vriendenlijst. Geef `summary` mee als die al berekend is (anders haalt de rij hem zelf op). */
@@ -135,7 +145,7 @@ export function FriendRow({
               <p className="mt-0.5 flex min-w-0 items-center gap-1 text-xs text-warn">
                 <TrophyIcon size={12} className="shrink-0" />
                 <span className="truncate">
-                  PR {prLabel(s.latestPR)} · {relativeDay(s.latestPR.date).toLowerCase()}
+                  {prLabel(s.latestPR)} · {relativeDay(s.latestPR.date).toLowerCase()}
                 </span>
               </p>
             )}

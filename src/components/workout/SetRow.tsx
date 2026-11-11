@@ -186,13 +186,22 @@ export function SetRow({
   ) : null;
 
   if (readOnly) {
+    // Alleen-lezen met een set die nog wacht of mislukte: die kan hier niet meer worden opgeslagen
+    // (bijv. geen lid meer van de groep). Niet als afgerond tonen.
+    const unsaved = failed || pending;
+    const shownDone = done && !unsaved;
     return (
-      <div id={anchorId} className={`${grid} min-h-11 rounded-xl ${done ? "bg-accent/5" : ""}`}>
-        <SetNumber n={setNumber} done={done} record={isRecord} />
+      <div id={anchorId} className={`${grid} min-h-11 rounded-xl ${unsaved ? "bg-danger/5" : shownDone ? "bg-accent/5" : ""}`}>
+        <SetNumber n={setNumber} done={shownDone} record={isRecord && !unsaved} />
         {prevCell}
         <span className="text-center tabular-nums">{log?.weight != null ? fmtNum(log.weight) : <span className="text-muted">–</span>}</span>
         <span className="text-center tabular-nums">{log?.reps != null ? log.reps : <span className="text-muted">–</span>}</span>
-        <span className="flex justify-center">{done && <CheckIcon size={16} className="text-accent" />}</span>
+        <span className="flex justify-center">{shownDone && <CheckIcon size={16} className="text-accent" />}</span>
+        {unsaved && (
+          <p className="col-span-full -mt-1 pl-9 text-[11px] text-danger" role="status">
+            Niet opgeslagen
+          </p>
+        )}
       </div>
     );
   }

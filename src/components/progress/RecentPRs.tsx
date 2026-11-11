@@ -6,7 +6,11 @@ import { isTimed } from "@/lib/exercises";
 import { formatSet, nl } from "@/lib/history";
 import { exerciseName, type RecentPR } from "@/lib/progress/records";
 
-/** Nieuwe records van de laatste twee weken, met de verbetering ten opzichte van het vorige record. */
+/**
+ * Nieuwe records van de laatste twee weken, met de verbetering ten opzichte van het vorige record.
+ * Kilo's met 2 decimalen (plaatjes van 1,25 kg), net als het afrondscherm. Bij een rep-record van
+ * een lichaamsgewicht-oefening is het gewicht extra gewicht: "+12,5 kg extra".
+ */
 export function RecentPRs({ prs, onOpen }: { prs: RecentPR[]; onOpen: (slug: string) => void }) {
   if (prs.length === 0) return null;
   const shown = prs.slice(0, 5);
@@ -20,6 +24,7 @@ export function RecentPRs({ prs, onOpen }: { prs: RecentPR[]; onOpen: (slug: str
         {shown.map((pr, i) => {
           const gain = pr.value - pr.previous;
           const pct = pr.previous > 0 ? (gain / pr.previous) * 100 : 0;
+          const rep = pr.kind === "rep";
           return (
             <li key={pr.slug} className="animate-fade-up" style={{ "--i": i } as React.CSSProperties}>
               <button
@@ -33,16 +38,19 @@ export function RecentPRs({ prs, onOpen }: { prs: RecentPR[]; onOpen: (slug: str
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-semibold">{exerciseName(pr.slug)}</span>
                   <span className="block truncate text-xs text-muted">
-                    {relativeDay(pr.date)} · {formatSet(pr.bestSet)}
+                    {relativeDay(pr.date)} · {rep ? `${pr.reps}RM-record · ` : ""}
+                    {formatSet(pr.bestSet)}
                   </span>
                 </span>
                 <span className="shrink-0 text-right tabular-nums">
                   <span className="block text-sm font-bold">
-                    {nl(pr.value)} {pr.weighted ? "kg" : isTimed(pr.slug) ? "s" : "reps"}
+                    {rep && pr.added ? "+" : ""}
+                    {nl(pr.value, 2)} {pr.weighted ? "kg" : isTimed(pr.slug) ? "s" : "reps"}
+                    {rep && pr.added && <span className="text-[11px] font-semibold text-muted"> extra</span>}
                   </span>
                   <span className="block text-xs font-semibold text-accent">
-                    +{nl(gain)} {pr.weighted ? "kg" : isTimed(pr.slug) ? "s" : gain === 1 ? "rep" : "reps"}
-                    {pr.weighted && pct > 0 ? ` (${nl(pct)}%)` : ""}
+                    +{nl(gain, 2)} {pr.weighted ? "kg" : isTimed(pr.slug) ? "s" : gain === 1 ? "rep" : "reps"}
+                    {pr.weighted && !rep && pct > 0 ? ` (${nl(pct)}%)` : ""}
                   </span>
                 </span>
                 <ChevronRightIcon size={14} className="shrink-0 text-muted" />

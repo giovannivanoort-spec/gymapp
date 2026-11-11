@@ -206,13 +206,14 @@ export default function GroupPage() {
       );
       return;
     }
-    goHomeAfterExit();
+    goHomeAfterExit(true);
   }
 
-  function goHomeAfterExit() {
+  /** `deleted`: de groep is verwijderd (niet alleen verlaten), met alle gelogde sets erin. */
+  function goHomeAfterExit(deleted: boolean) {
     // forgetGroup laat de data van deze (nog zichtbare) pagina staan: geen skeleton-flits.
     router.replace("/");
-    forgetGroup(id, userId);
+    forgetGroup(id, userId, { deleted });
     try {
       localStorage.removeItem(tabStorageKey(id));
     } catch {
@@ -562,8 +563,8 @@ export default function GroupPage() {
         onClose={() => setDeleteOpen(false)}
         body={
           <>
-            <span className="font-semibold text-ink">{group?.name}</span> wordt verwijderd, met alle trainingen, gelogde sets en
-            activiteit. Dit kan niet ongedaan worden gemaakt.
+            <span className="font-semibold text-ink">{group?.name}</span> wordt verwijderd, met alle trainingen en activiteit. Alle
+            gelogde sets in deze groep worden ook verwijderd, voor alle leden. Dit kan niet ongedaan worden gemaakt.
           </>
         }
       />

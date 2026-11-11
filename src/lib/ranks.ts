@@ -92,6 +92,21 @@ export function isLoadScored(slug: string | null | undefined): boolean {
   return !!slug && STANDARDS[slug]?.scoring === "load";
 }
 
+/**
+ * Lichaamsgewicht-oefening (rang op reps, zoals pull-up, dips, push-up): gelogd gewicht is extra
+ * gewicht bovenop je lichaam (vest, riem, schijf), niet de hele last.
+ */
+export function isBodyweightBased(slug: string | null | undefined): boolean {
+  const std = slug ? STANDARDS[slug] : null;
+  return !!std && std.unit === "reps" && !std.anyWeight;
+}
+
+/** Oefening op reps waarbij gelogd gewicht een band of hulpmiddel is (anyWeight): zwaarder zegt weinig. */
+export function isAnyWeightReps(slug: string | null | undefined): boolean {
+  const std = slug ? STANDARDS[slug] : null;
+  return !!std && std.unit === "reps" && !!std.anyWeight;
+}
+
 /** Gewicht waartegen ondersteuning wordt afgezet voor onderlinge vergelijking (geen lichaamsgewicht nodig). */
 const ASSIST_REF = 100;
 

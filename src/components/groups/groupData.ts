@@ -2,9 +2,23 @@
 
 import { useCallback, useState } from "react";
 import { useUserId } from "@/components/AuthProvider";
-import { fetchCached, forgetPersisted, getCached, invalidate, removeCached, setCached, useCached, useCachedError } from "@/lib/cache";
+import { commentsKey, histPrefix, logsKey, workoutKey } from "@/components/workout/data";
+import {
+  cachedKeys,
+  fetchCached,
+  forgetPersisted,
+  getCached,
+  invalidate,
+  readCached,
+  removeCached,
+  setCached,
+  useCached,
+  useCachedError,
+} from "@/lib/cache";
 import { toISODate } from "@/lib/dates";
 import { invalidateMyGroups, myGroupsKey, type MyGroup } from "@/lib/groups";
+import { invalidateHistory } from "@/lib/history";
+import { dropForGroup } from "@/lib/offlineQueue";
 import { isMissingSchemaError, supabase } from "@/lib/supabase";
 import { PUBLIC_PROFILE_COLUMNS, PUBLIC_PROFILE_COLUMNS_NO_PHOTO, type Group, type GroupMember, type Workout } from "@/lib/types";
 import { addDays } from "@/lib/week";
@@ -276,12 +290,34 @@ function removeFromHome(groupId: string, userId: string) {
 /**
  * Bij "niet gevonden": de bewaarde kopieën vergeten. De groepssleutel krijgt een lege waarde die
  * even als vers geldt, zodat er geen herhaalde verzoeken volgen terwijl het foutscherm staat.
+ *
+ * Meestal is dit iemand die door een trainer uit de groep is gehaald (of een groep die intussen is
+ * verwijderd): dan ook de bewaarde trainingen en de offline wachtrij van die groep opruimen, net als
+ * bij zelf verlaten. Anders staat hij in een offline kopie nog als lid en lijkt de training bewerkbaar.
  */
 function dropGroupLocally(groupId: string, userId: string) {
   removeFromHome(groupId, userId);
   if (getCached(groupKey(groupId)) !== undefined) setCached(groupKey(groupId), undefined);
   forgetPersisted(groupKey(groupId));
   forgetPersisted(`feed:${groupId}:${FEED_PAGE}`);
+  forgetGroupWorkouts(groupId).catch(() => {});
+  invalidate("leaderboard:", { soft: true });
+}
+
+/**
+ * Vanaf een trainingspagina vastgesteld dat je geen lid meer bent (de bewaarde kopie had je nog als
+ * lid, de server niet meer): de groep en zijn andere bewaarde trainingen vergeten, zoals bij het
+ * openen van de groepspagina. De training die nu open staat (`keepWorkout`) blijft staan: die pagina
+ * toont zelf al de alleen-lezen weergave en laat wachtende sets bewust weggooien.
+ */
+export function forgetRemovedGroup(groupId: string, userId: string, keepWorkout: string) {
+  removeFromHome(groupId, userId);
+  forgetPersisted(groupKey(groupId));
+  forgetPersisted(`feed:${groupId}:${FEED_PAGE}`);
+  removeCached(groupKey(groupId));
+  removeCached(`feed:${groupId}:`);
+  forgetGroupWorkouts(groupId, keepWorkout).catch(() => {});
+  invalidate("leaderboard:", { soft: true });
 }
 
 /**
@@ -289,8 +325,11 @@ function dropGroupLocally(groupId: string, userId: string) {
  * groepsdata en feed vergeten, zodat er nergens nog een oude kopie opduikt. De kopie op het
  * toestel gaat meteen weg; het geheugen (en een fetch die nog loopt) pas als de navigatie naar
  * Home klaar is, anders flitst er op de nog zichtbare pagina een skeleton of "niet gevonden".
+ *
+ * `deleted`: de groep zelf is verwijderd (niet alleen verlaten). Dan zijn ook alle gelogde sets
+ * daarin weg en moet de eigen geschiedenis volledig opnieuw worden opgehaald.
  */
-export function forgetGroup(groupId: string, userId: string) {
+export function forgetGroup(groupId: string, userId: string, { deleted = false }: { deleted?: boolean } = {}) {
   removeFromHome(groupId, userId);
   forgetPersisted(groupKey(groupId));
   forgetPersisted(`feed:${groupId}:${FEED_PAGE}`);
@@ -298,8 +337,64 @@ export function forgetGroup(groupId: string, userId: string) {
     removeCached(groupKey(groupId));
     removeCached(`feed:${groupId}:`);
   }, FORGET_DELAY_MS);
+  // Opruimen op de achtergrond; een onverwachte fout (opslag niet beschikbaar) mag het verlaten niet
+  // in de weg zitten: online haalt de trainingspagina toch alles opnieuw op.
+  forgetGroupWorkouts(groupId).catch(() => {});
   invalidate("leaderboard:", { soft: true });
   invalidate("history:", { soft: true });
+  // Groep verwijderd: de sets daarin zijn echt weg, dus de eigen geschiedenis volledig opnieuw (een
+  // gedeeltelijke sync haalt alleen de laatste week op en zou oudere sets laten staan).
+  // Alleen verlaten: de eigen sets blijven bestaan en (met upgrade-own-history.sql) zichtbaar, dus
+  // volstaat het zachte verversen hierboven. Bewust niet volledig: staat de SQL-upgrade (nog) niet
+  // live, dan zou een volledige sync de sets uit deze groep direct uit records en ranks halen, terwijl
+  // de melding bij verlaten belooft dat ze blijven.
+  if (deleted) invalidateHistory(userId);
+}
+
+/** Bewaarde training zoals hier gelezen: data van het toestel, dus niet op de vorm vertrouwen. */
+type StoredBundle = { workout?: { group_id?: unknown; workout_exercises?: unknown } } | null;
+
+/**
+ * Bewaarde trainingen van een verlaten of verwijderde groep vergeten (training met leden, sets,
+ * opmerkingen en de geschiedenis die erbij is opgehaald). Anders staat jij er in een offline kopie
+ * nog als lid in: de training lijkt dan bewerkbaar, en wat je invult zou later toch geweigerd worden.
+ * Online haalt de trainingspagina alles opnieuw op met wat je nu nog mag zien.
+ *
+ * Welke bewaarde trainingen bij de groep horen, staat alleen in die trainingen zelf: ze worden dus
+ * allemaal even ingelezen (ook grote items uit IndexedDB). Dat gebeurt alleen bij verlaten of
+ * verwijderen, en een onleesbaar item slaat alleen dat item over.
+ *
+ * Ook wat er voor deze groep nog in de offline wachtrij stond, gaat weg: die sets kunnen na het
+ * verlaten niet meer worden opgeslagen (de server weigert ze), en records of "training afgerond"
+ * kunnen niet meer in de groepsfeed. Sets van een training die niet (meer) bewaard was, worden hier
+ * niet herkend; die verschijnen op de trainingspagina als "niet meer op te slaan", met de keuze om
+ * ze weg te gooien.
+ *
+ * `keepWorkout`: deze training (en wat daarvoor nog wacht) overslaan, omdat die nu open staat.
+ */
+async function forgetGroupWorkouts(groupId: string, keepWorkout?: string) {
+  const prefix = workoutKey("");
+  const ids: string[] = [];
+  const wexIds = new Set<string>();
+  for (const key of await cachedKeys(prefix)) {
+    if (keepWorkout && key === workoutKey(keepWorkout)) continue;
+    let workout: NonNullable<StoredBundle>["workout"];
+    try {
+      workout = (await readCached<StoredBundle>(key))?.workout;
+    } catch {
+      continue;
+    }
+    if (!workout || workout.group_id !== groupId) continue;
+    ids.push(key.slice(prefix.length));
+    const list = workout.workout_exercises;
+    if (!Array.isArray(list)) continue;
+    for (const e of list) {
+      const wexId = (e as { id?: unknown } | null)?.id;
+      if (typeof wexId === "string") wexIds.add(wexId);
+    }
+  }
+  dropForGroup(groupId, wexIds);
+  for (const id of ids) for (const k of [workoutKey(id), logsKey(id), commentsKey(id), histPrefix(id)]) removeCached(k);
 }
 
 /** Wachttijd voordat een verlaten groep ook uit het geheugen gaat (navigatie naar Home is dan klaar). */

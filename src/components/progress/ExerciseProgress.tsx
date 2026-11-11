@@ -8,6 +8,7 @@ import { formatDate } from "@/lib/dates";
 import { isTimed } from "@/lib/exercises";
 import { formatSet, nl, type HistorySet, type Session } from "@/lib/history";
 import { exerciseName, groupExercises, isWeighted } from "@/lib/progress/records";
+import { RepRecordsGrid } from "./RepRecordsGrid";
 
 const PAGE = 8;
 
@@ -212,6 +213,8 @@ export const ExerciseProgress = forwardRef<
             <span className="inline-block h-2.5 w-2.5 rounded-full border-[1.5px] border-accent/60 bg-accent" aria-hidden /> Nieuw record · {meta.label}
           </p>
         )}
+
+        <RepRecordsGrid sessions={sessions} />
 
         <div>
           <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted">Trainingen</p>

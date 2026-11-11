@@ -11,7 +11,9 @@ export type CommentWithAuthor = Comment & { profiles: { display_name: string } |
 export const workoutKey = (id: string) => `wo:workout:${id}`;
 export const logsKey = (id: string) => `wo:logs:${id}`;
 export const commentsKey = (id: string) => `wo:comments:${id}`;
-const histKey = (workoutId: string, uid: string) => `wo:hist:${workoutId}:${uid}`;
+/** Voorvoegsel van alle eerdere-sets-sleutels van één training (om ze samen te vergeten). */
+export const histPrefix = (workoutId: string) => `wo:hist:${workoutId}:`;
+const histKey = (workoutId: string, uid: string) => `${histPrefix(workoutId)}${uid}`;
 
 function fail(error: { message: string }): never {
   throw new Error(error.message);

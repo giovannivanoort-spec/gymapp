@@ -5,7 +5,7 @@ import { ChevronRightIcon } from "@/components/Icons";
 import { formatDate, toISODate } from "@/lib/dates";
 import { isTimed } from "@/lib/exercises";
 import { nl, type HistorySet, type Session } from "@/lib/history";
-import { exerciseName, isWeighted, sessionValue } from "@/lib/progress/records";
+import { exerciseName, isWeighted, sessionRecords } from "@/lib/progress/records";
 import { estimate1RM } from "@/lib/ranks";
 
 export type PlannedWorkout = { id: string; date: string; title: string; group: string | null };
@@ -85,17 +85,16 @@ export function DayDetail({
               </Link>
               {byExercise.map((exSets) => {
                 const slug = exSets[0].slug;
-                // Zelfde regels als de grafiek en "Recente records": op geschatte 1RM, of op reps bij
-                // lichaamsgewicht-oefeningen. De eerste keer dat je een oefening doet is geen record.
+                // Zelfde regels als "Recente records" en de maandcijfers (sessionRecords): een hogere
+                // geschatte 1RM (zonder gewicht: meer reps), anders een rep-record. De eerste keer dat je
+                // een oefening doet is geen record. Alleen de set die het record zette krijgt het label.
                 const all = sessions.get(slug) ?? [];
                 const weighted = isWeighted(all);
-                const before = all.filter((s) => s.date < day).map((s) => sessionValue(s, weighted));
-                const prevBest = Math.max(0, ...before);
+                const weId = exSets[0].workoutExerciseId;
+                const sessionIndex = all.findIndex((s) => s.sets[0]?.workoutExerciseId === weId);
+                const record = sessionIndex >= 0 ? sessionRecords(slug, all, weighted)[sessionIndex] : null;
+                const prIndex = record ? exSets.findIndex((s) => s.setNumber === record.set.setNumber) : -1;
                 const scores = exSets.map((s) => estimate1RM(s.weight ?? 0, s.reps ?? 0));
-                const values = weighted ? scores.map((e) => e ?? 0) : exSets.map((s) => s.reps ?? 0);
-                const best = Math.max(0, ...values);
-                // Alleen de eerste set met de beste waarde krijgt het PR-label.
-                const prIndex = before.length > 0 && prevBest > 0 && best > prevBest ? values.findIndex((v) => v === best) : -1;
                 return (
                   <div key={exSets[0].workoutExerciseId} className="space-y-1.5">
                     <div className="flex items-baseline justify-between gap-2">
@@ -124,12 +123,20 @@ export function DayDetail({
                               <td className="py-1.5">{s.weight != null ? nl(s.weight) : "–"}</td>
                               <td className="py-1.5">{s.reps ?? "–"}</td>
                               <td className="py-1.5 text-right">
-                                {i === prIndex && (
+                                {i === prIndex && record && (
                                   <span
                                     className="mr-2 rounded-md bg-accent/15 px-1.5 py-0.5 text-[10px] font-bold text-accent"
-                                    title={weighted ? "Nieuw record (geschatte 1RM)" : "Nieuw record (reps)"}
+                                    title={
+                                      record.kind === "rep"
+                                        ? `Nieuw ${record.reps}RM-record: ${record.added ? "meeste extra gewicht" : "zwaarste gewicht"} voor minstens ${record.reps} reps`
+                                        : weighted
+                                          ? "Nieuw record (geschatte 1RM)"
+                                          : isTimed(slug)
+                                            ? "Nieuw record (seconden)"
+                                            : "Nieuw record (reps)"
+                                    }
                                   >
-                                    PR
+                                    {record.kind === "rep" ? `${record.reps}RM` : "PR"}
                                   </span>
                                 )}
                                 {e != null ? nl(e) : weighted ? <span className="text-muted">–</span> : null}

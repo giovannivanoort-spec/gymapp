@@ -119,9 +119,11 @@ function tomorrowISO(): string {
 
 async function run(userId: string): Promise<OfflineReady> {
   const today = toISODate();
+  // Alleen trainingen van groepen waar je nu lid van bent: de ledenlijst is alleen voor leden
+  // leesbaar (een verlaten groep die je zelf aanmaakte, blijft zonder dit filter zichtbaar).
   const { data, error } = await supabase
     .from("workouts")
-    .select("id, title, date, groups!inner(name)")
+    .select("id, title, date, groups!inner(name, group_members!inner(user_id))")
     .in("date", [today, tomorrowISO()])
     .order("date")
     .order("created_at")

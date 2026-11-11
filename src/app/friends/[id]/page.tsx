@@ -360,14 +360,15 @@ function PrRow({ pr, index }: { pr: PersonalRecord; index: number }) {
       </span>
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-semibold">{ex?.name ?? pr.slug}</p>
-        <p className="text-xs tabular-nums text-muted">
+        <p className="truncate text-xs tabular-nums text-muted">
+          {pr.kind === "rep" ? <>{pr.reps}RM-record · </> : null}
           {formatSet(pr.set)}
-          {pr.unit === "kg" && <> · geschatte 1RM {nl(pr.value)} kg</>}
+          {pr.kind === "e1rm" && pr.unit === "kg" && <> · geschatte 1RM {nl(pr.value)} kg</>}
         </p>
       </div>
       <div className="shrink-0 text-right">
         <p className="text-sm font-bold tabular-nums text-accent">
-          +{pr.unit === "kg" ? `${nl(delta)} kg` : isTimed(pr.slug) ? `${delta} s` : `${delta} ${delta === 1 ? "rep" : "reps"}`}
+          +{pr.unit === "kg" ? `${nl(delta, 2)} kg` : isTimed(pr.slug) ? `${delta} s` : `${delta} ${delta === 1 ? "rep" : "reps"}`}
         </p>
         <p className="text-[11px] text-muted">{relativeDay(pr.date)}</p>
       </div>

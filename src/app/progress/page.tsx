@@ -58,10 +58,15 @@ function ProgressSkeleton() {
 
 type PlannedRow = { id: string; date: string; title: string; groups: { name: string } | null };
 
+/**
+ * Geplande trainingen van je huidige groepen. De ledenlijst (alleen voor leden leesbaar) filtert
+ * trainingen van vrienden en van verlaten groepen weg; groups!inner alleen niet, want een groep die
+ * je zelf aanmaakte blijft na verlaten leesbaar.
+ */
 async function fetchPlanned(from: string, to: string): Promise<PlannedWorkout[]> {
   const { data, error } = await supabase
     .from("workouts")
-    .select("id, date, title, groups!inner(name)")
+    .select("id, date, title, groups!inner(name, group_members!inner(user_id))")
     .gte("date", from)
     .lte("date", to)
     .order("date");
